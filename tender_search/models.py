@@ -460,13 +460,12 @@ class SupplyDocs(models.Model):
 
 
 class TenderAssociations(models.Model):
-    gemtenderid = models.ForeignKey(GemTenders, models.DO_NOTHING, db_column='gemTenderId', blank=True, null=True)  # Field name made lowercase.
-    nongemtenderid = models.ForeignKey(NonGemTenders, models.DO_NOTHING, db_column='nonGemTenderId', blank=True, null=True)  # Field name made lowercase.
     associationid = models.ForeignKey(Associations, models.DO_NOTHING, db_column='associationId')  # Field name made lowercase.
     createdat = models.DateTimeField(db_column='createdAt')  # Field name made lowercase.
     updatedat = models.DateTimeField(db_column='updatedAt')  # Field name made lowercase.
     tendermergedid = models.ForeignKey('TenderMerged', models.DO_NOTHING, db_column='tenderMergedId', blank=True, null=True)  # Field name made lowercase.
-
+    gemtenderid = models.ForeignKey(GemTenders, models.DO_NOTHING, db_column='gemTenderId', blank=True, null=True)  # Field name made lowercase.
+    nongemtenderid = models.ForeignKey(NonGemTenders, models.DO_NOTHING, db_column='nonGemTenderId', blank=True, null=True)  # Field name made lowercase.
     class Meta:
         managed = False
         db_table = 'tender_associations'
@@ -635,6 +634,12 @@ class TenderMerged(models.Model):
     issuingbank = models.TextField(db_column='issuingBank', blank=True, null=True)  # Field name made lowercase.
     basedate = models.DateTimeField(db_column='baseDate', blank=True, null=True)  # Field name made lowercase.
     boqsummary = models.TextField(db_column='boqSummary', blank=True, null=True)  # Field name made lowercase.
+    notificationstatus = models.TextField(db_column='notificationStatus', blank=True, null=True)  # Field name made lowercase.
+    cataloguedone = models.TextField(db_column='catalogueDone')  # Field name made lowercase. This field type is a guess.
+    reverseauctionenddate = models.DateTimeField(db_column='reverseAuctionEndDate', blank=True, null=True)  # Field name made lowercase.
+    reverseauctionstartdate = models.DateTimeField(db_column='reverseAuctionStartDate', blank=True, null=True)  # Field name made lowercase.
+    reverseauctiondate = models.DateTimeField(db_column='reverseAuctionDate', blank=True, null=True)  # Field name made lowercase.
+    buyerdetails = models.TextField(db_column='buyerDetails', blank=True, null=True)  # Field name made lowercase.
 
     class Meta:
         managed = False
