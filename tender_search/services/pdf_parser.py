@@ -274,6 +274,8 @@ def _save_to_db(gem_id: str, data: dict) -> dict:
             for c in group.get("Consignee_Data", []):
                 print(f"    officer={c.get('Consignee_Name','')}, address={c.get('Address','')}, quantity={c.get('Quantity','')}")
                 Reportings.objects.create(tendermergedid=tender, officer=c.get("Consignee_Name", ""), address=c.get("Address", ""), quantity=c.get("Quantity", ""), createdat=timezone.now(), updatedat=timezone.now())
+        if data.get("Reverse_Auction_Applicable"):
+            tender.reverseauctionapplicable = True
         tender.parsestatus = "COMPLETED"
         tender.parseerror = None
         tender.save()
@@ -336,18 +338,20 @@ def parse_gem_pdf_service(pdf_path):
         "Item_Category_List": [],
         "EMD_Details": {},
         "Dated": None,
+        "Reverse_Auction_Applicable": False,
         "Technical_Specifications": [],
         "Consignees": []
     }
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
+            page_text = page.extract_text() or ""
             if not data["Dated"]:
-                page_text = page.extract_text()
-                if page_text:
-                    m = re.search(r'[Dd]ated\s*:?\s*(\d{2}-\d{2}-\d{4})', page_text)
-                    if m:
-                        data["Dated"] = m.group(1)
+                m = re.search(r'[Dd]ated\s*:?\s*(\d{2}-\d{2}-\d{4})', page_text)
+                if m:
+                    data["Dated"] = m.group(1)
+            if not data["Reverse_Auction_Applicable"] and "reverse auction would be conducted" in page_text.lower():
+                data["Reverse_Auction_Applicable"] = True
             tables = page.find_tables()
             
             for table in tables:
@@ -449,7 +453,7 @@ def parse_gem_pdf_service(pdf_path):
 
                 # --- 4. TECHNICAL SPECIFICATIONS (Multi-item Links style) ---
                 if len(extracted_text) >= 2 and extracted_text[0] and extracted_text[0][0]:
-                    if "Specification Document" or "Buyer Specification Document" in clean_text(extracted_text[0][0]):
+                    if "Specification Document" in clean_text(extracted_text[0][0]) or "Buyer Specification Document" in clean_text(extracted_text[0][0]):
                         
                         item_idx = len(data["Technical_Specifications"])
                         item_name = data["Item_Category_List"][item_idx] if item_idx < len(data["Item_Category_List"]) else "Unknown Item"
