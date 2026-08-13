@@ -1,0 +1,28 @@
+services:
+
+  automation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: django-worker:latest
+    container_name: tender-worker
+    command: python manage.py consume_tender_tasks
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    networks:
+      - infra
+
+  parsing-worker:
+    image: django-worker:latest
+    container_name: pdf-worker
+    command: python manage.py consume_tender_parsing
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
