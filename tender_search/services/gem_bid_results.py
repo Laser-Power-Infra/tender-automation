@@ -44,6 +44,7 @@ def _save_to_db(gem_id: str, result: dict):
     bid_status = result.get("bidStatus", "")
 
     gem.bidstatus = bid_status
+    gem.buyerdetails = result.get("buyerDetails", "{}")
 
     if evaluations:
         md = [
@@ -58,7 +59,7 @@ def _save_to_db(gem_id: str, result: dict):
                 f"| {e.get('totalPrice', '')} "
                 f"| {e.get('status', '')} |"
             )
-        gem.evaluationtabledata = "\n".join(md)
+        gem.competitors = "\n".join(md)
 
     rank1 = rank2 = laser = None
     for e in evaluations:
@@ -87,6 +88,9 @@ def _save_to_db(gem_id: str, result: dict):
             pl = _parse_price(laser.get("totalPrice"))
             if p2 and pl:
                 gem.differencebetweenrank2 = f"{((pl - p2) / p2) * 100:.2f}%"
+            laser_rank = (laser.get("rank") or "").strip()
+            gem.ourrank = re.sub(r"[^0-9]", "", laser_rank)
+            gem.ourvalue =  laser.get("totalPrice")
 
     gem.result_automation_status = "completed"
     gem.result_automation_error = ""
@@ -284,7 +288,29 @@ def get_view_bid_results_url(page: Page) -> Optional[str]:
 
     return None
 
+def extract_buyer_details(page: Page) -> str:
+    import json
+    body_text = page.locator("body").inner_text()
 
+    match = re.search(
+        r"Buyer Details\s*\n(.*?)(\n2\.\s*Evaluation|\nWEB INFO|\Z)",
+        body_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        print("  extract_buyer_details: not found")
+        return "{}"
+
+    buyer = {}
+    for line in match.group(1).strip().split("\n"):
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        buyer[key.strip()] = value.strip()
+
+    print(f"  extract_buyer_details: {json.dumps(buyer, indent=2)}")
+    return json.dumps(buyer)
 
 
 def parse_evaluation_table(page: Page) -> list[dict]:
@@ -486,6 +512,9 @@ def process_tender(page: Page, gem_id: str, browser) -> dict:
             except Exception as e:
                 print(f"  {gem_id}: could not read body — {e}")
 
+            print(f"  {gem_id}: extracting buyer details")
+            buyer_details = extract_buyer_details(bid_results_page)
+
             print(f"  {gem_id}: parsing evaluation table")
             evaluations = parse_evaluation_table(bid_results_page)
             # price_diff = calculate_difference(evaluations)
@@ -499,6 +528,7 @@ def process_tender(page: Page, gem_id: str, browser) -> dict:
                 "success": True,
                 "bidStatus": row_info.get("bidStatus"),
                 "evaluations": evaluations,
+                "buyerDetails": buyer_details,
                 # "priceDifference": price_diff,
             }
 
@@ -557,6 +587,7 @@ def extract_bid_results(
             "success": r["success"],
             "bidStatus": r.get("bidStatus"),
             "evaluationCount": len(r.get("evaluations", [])),
+            "buyerDetails": r.get("buyerDetails"),
         }
         for r in results
     ]
