@@ -339,6 +339,7 @@ def parse_gem_pdf_service(pdf_path):
         "EMD_Details": {},
         "Dated": None,
         "Reverse_Auction_Applicable": False,
+        "Empanelled_Inspection_Agency": None,
         "Technical_Specifications": [],
         "Consignees": []
     }
@@ -384,7 +385,9 @@ def parse_gem_pdf_service(pdf_path):
                     elif "EMD Amount" in header or "ईएमडी राशि" in header:
                         if len(row) > 1:
                             data["EMD_Details"]["EMD Amount"] = clean_text(row[1])
-
+                    elif "Empanelled Inspection" in header or "Inspection Agency" in header or "निरीक्षण एजेंसी" in header:
+                        if len(row) > 1:
+                            data["Empanelled_Inspection_Agency"] = clean_text(row[1])
                 # --- 3. TECHNICAL SPECIFICATIONS (Single item / 3-Column or 2-Column Key-Value style) ---
                 if len(extracted_text) > 0 and extracted_text[0]:
                     header_row = [clean_text(c) for c in extracted_text[0]]
