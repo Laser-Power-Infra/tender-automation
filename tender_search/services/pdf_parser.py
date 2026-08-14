@@ -225,6 +225,7 @@ def _save_to_db(gem_id: str, data: dict) -> dict:
     try:
         print(f"\n  [DB] Saving to TenderMerged ({gem_id}):")
         print(f"    totalquantity = {data.get('Total_Quantity')}")
+        print(f"    inspectionagency = {data.get('Empanelled_Inspection_Agency')}")
         print(f"    itemcategory  = {data.get('Item_Category_String')}")
         print(f"    emd           = {json.dumps(data.get('EMD_Details', {}), ensure_ascii=False)}")
         if data.get("Total_Quantity"):
@@ -238,6 +239,8 @@ def _save_to_db(gem_id: str, data: dict) -> dict:
             tender.emd = emd_details["EMD Amount"]
         if data.get("Dated"):
             tender.publisheddate = datetime.strptime(data["Dated"], "%d-%m-%Y")
+        if data.get("Empanelled_Inspection_Agency"):
+            tender.inspectionagency = str(data["Empanelled_Inspection_Agency"])
         has_links = False
         size_md_parts = []
         seen_urls = set()
