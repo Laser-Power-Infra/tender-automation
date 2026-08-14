@@ -640,6 +640,7 @@ class TenderMerged(models.Model):
     reverseauctionstartdate = models.DateTimeField(db_column='reverseAuctionStartDate', blank=True, null=True)  # Field name made lowercase.
     reverseauctiondate = models.DateTimeField(db_column='reverseAuctionDate', blank=True, null=True)  # Field name made lowercase.
     buyerdetails = models.TextField(db_column='buyerDetails', blank=True, null=True)  # Field name made lowercase.
+    inspectionagency = models.TextField(db_column='inspectionAgency', blank=True, null=True)  # Field name made lowercase.
 
     class Meta:
         managed = False
