@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import logging
+from datetime import datetime
 
 import pdfplumber
 import requests
@@ -16,6 +17,33 @@ def extract_drive_file_id(url: str) -> str | None:
     m = DRIVE_FILE_ID_RE.search(url)
     return m.group(1) if m else None
 
+def _save_to_db(gemid: str, result: dict):
+    try:
+        from tender_search.models import TenderMerged
+        gem = TenderMerged.objects.filter(referenceno=gemid).first()
+
+        if not gem:
+            logger.error("No TenderMerged found for referenceno: %s", gemid)
+            return
+
+        start_date = result.get("start_date")
+        end_date = result.get("end_date")
+
+        if start_date:
+            gem.reverseauctionstartdate = datetime.strptime(start_date, "%d-%m-%Y %H:%M:%S")
+        if end_date:
+            gem.reverseauctionenddate = datetime.strptime(end_date, "%d-%m-%Y %H:%M:%S")
+
+        if start_date and end_date:
+            gem.reverseauctionautomationstatus = "SUCCESS"
+        else:
+            gem.reverseauctionautomationstatus = None
+
+        gem.save()
+        logger.info("Saved RA dates for %s: start=%s end=%s", gemid, start_date, end_date)
+
+    except Exception as e:
+        logger.error("Error saving RA dates to DB for %s: %s", gemid, e)
 
 def download_from_drive(file_id: str, dest_path: str) -> str:
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
@@ -97,10 +125,9 @@ def process_ra_document(reference_no: str, drive_link: str) -> dict:
 
         if result["start_date"] is None and result["end_date"] is None:
             result["error"] = "Could not find Start/End Date in RA document"
-            return result
-
-        result["success"] = True
-        logger.info("Parsed RA document for %s: start=%s end=%s", reference_no, result["start_date"], result["end_date"])
+        else:
+            result["success"] = True
+            logger.info("Parsed RA document for %s: start=%s end=%s", reference_no, result["start_date"], result["end_date"])
 
     except Exception as e:
         logger.exception("RA document processing failed")
@@ -114,4 +141,5 @@ def process_ra_document(reference_no: str, drive_link: str) -> dict:
             except Exception as e:
                 logger.warning("Could not delete %s: %s", pdf_path, e)
 
+    _save_to_db(reference_no, result)
     return result
