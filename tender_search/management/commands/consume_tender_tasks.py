@@ -10,12 +10,14 @@ from tender_search.queue import get_connection
 from tender_search.queue_types import (
     GemDownloadTask,
     NonGemDownloadTask,
+    RAGemDownloadTask,
     tender_tasks_adapter,
 )
 from tender_search.services.non_gem_tender_pdf_downloader import login_tender247
 from tender_search.services.tender_tiger import login_tiger
 from tender_search.models import TenderMerged, TenderFiles
 from tender_search.services.gem_pdf_downloader import download_gem_pdf
+from tender_search.services.gem_ra_pdf_downloader import download_ra_pdf
 logger = logging.getLogger(__name__)
 import asyncio
 
@@ -49,6 +51,23 @@ def callback(ch, method, properties, body):
                 logger.info("Published GEM parsing job for %s", payload.gemId)
             else:
                 logger.error("GEM_DOWNLOAD failed for %s: %s", payload.gemId, gem_result.get("error"))
+
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        elif isinstance(payload, RAGemDownloadTask):
+            ra_result = download_ra_pdf(payload.referenceNo)
+            print("RA_RESULT.....................", ra_result)
+
+            if ra_result.get("success"):
+                ch.queue_declare(queue="tender:parsing", durable=True)
+                ch.basic_publish(
+                    exchange="",
+                    routing_key="tender:parsing",
+                    body=json.dumps({"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": ra_result.get("driveLink")}),
+                    properties=pika.BasicProperties(delivery_mode=2),
+                )
+                logger.info("Published RA GEM parsing job for %s", payload.referenceNo)
+            else:
+                logger.error("RA_GEM_DOWNLOAD failed for %s: %s", payload.referenceNo, ra_result.get("error"))
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
         elif isinstance(payload, NonGemDownloadTask):

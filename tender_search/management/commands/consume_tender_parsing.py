@@ -17,6 +17,7 @@ from tender_search.queue_types import TenderParsingMessage, CostingAttachmentPar
 from tender_search.services.pdf_parser import parse_and_save_gem_pdf
 from tender_search.services.costing_excel_parse import parse_costing_excel
 from tender_search.services.boq_parser import process_boq
+from tender_search.services.gem_ra_pdf_parser import process_ra_document
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,13 @@ def callback(ch, method, properties, body):
             logger.info("SUCCESS: BOQ attachment parsed for %s", payload.referenceNo)
             print( "..........Parsed  BOQ excel...........",)
             print(f"[tender:parsing] BOQSUCCESS: {boq_parse}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        elif payload.type == "RA_GEM_PDF_PARSING":
+            print("RA drive link.......", payload.file_link)
+            ra_parse = process_ra_document(reference_no=payload.referenceNo, drive_link=payload.file_link)
+            logger.info("RA document parsed for %s", payload.referenceNo)
+            print("..........Parsed RA document...........")
+            print(f"[tender:parsing] RA SUCCESS: {ra_parse}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
