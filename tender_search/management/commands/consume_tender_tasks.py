@@ -6,7 +6,7 @@ import pika
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
-from tender_search.queue import get_connection
+from tender_search.queue import get_channel
 from tender_search.queue_types import (
     GemDownloadTask,
     NonGemDownloadTask,
@@ -41,10 +41,9 @@ def callback(ch, method, properties, body):
             print("GEM_RESULT.....................", gem_result)
 
             if gem_result.get("success"):
-                ch.queue_declare(queue="tender:parsing", durable=True)
                 ch.basic_publish(
                     exchange="",
-                    routing_key="tender:parsing",
+                    routing_key=settings.TENDER_PARSING_QUEUE,
                     body=json.dumps({"type": "GEM_PDF_PARSING", "referenceNo": payload.gemId}),
                     properties=pika.BasicProperties(delivery_mode=2),
                 )
@@ -58,10 +57,9 @@ def callback(ch, method, properties, body):
             print("RA_RESULT.....................", ra_result)
 
             if ra_result.get("success"):
-                ch.queue_declare(queue="tender:parsing", durable=True)
                 ch.basic_publish(
                     exchange="",
-                    routing_key="tender:parsing",
+                    routing_key=settings.TENDER_PARSING_QUEUE,
                     body=json.dumps({"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": ra_result.get("driveLink")}),
                     properties=pika.BasicProperties(delivery_mode=2),
                 )
@@ -97,10 +95,9 @@ def callback(ch, method, properties, body):
                         createdat=timezone.now(),
                         updatedat=timezone.now(),
                     )
-                    ch.queue_declare(queue="tender:parsing", durable=True)
                     ch.basic_publish(
                         exchange="",
-                        routing_key="tender:parsing",
+                        routing_key=settings.TENDER_PARSING_QUEUE,
                         body=json.dumps({
                             "type": "NON_GEM_BOQ_PARSING",
                             "referenceNo": reference_no,
@@ -130,10 +127,9 @@ def callback(ch, method, properties, body):
                                         createdat=timezone.now(),
                                         updatedat=timezone.now(),
                                     )
-                                    ch.queue_declare(queue="tender:parsing", durable=True)
                                     ch.basic_publish(
                                         exchange="",
-                                        routing_key="tender:parsing",
+                                        routing_key=settings.TENDER_PARSING_QUEUE,
                                         body=json.dumps({
                                             "type": "NON_GEM_BOQ_PARSING",
                                             "referenceNo": reference_no,
@@ -155,16 +151,8 @@ def callback(ch, method, properties, body):
 class Command(BaseCommand):
     help = "Consume messages from the tender:tasks RabbitMQ queue"
 
-    def add_arguments(self, parser):
-        parser.add_argument(
-            "--queue",
-            type=str,
-            default="tender:tasks",
-            help="Queue name to consume from (default: tender:tasks)",
-        )
-
     def handle(self, *args, **options):
-        queue = options["queue"]
+        queue = settings.TENDER_TASKS_QUEUE
 
         if not settings.RABBITMQ_URL:
             raise CommandError(
@@ -178,9 +166,10 @@ class Command(BaseCommand):
         channel = None
 
         try:
-            conn = get_connection()
-            channel = conn.channel()
-            channel.queue_declare(queue=queue, durable=True)
+            channel = get_channel(queue)
+            conn = channel.connection
+            ensure = get_channel(settings.TENDER_PARSING_QUEUE)
+            ensure.connection.close()
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue=queue, on_message_callback=callback)
 

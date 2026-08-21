@@ -6,6 +6,7 @@ from datetime import datetime
 
 import openpyxl
 import requests
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from pprint import pprint
@@ -238,6 +239,41 @@ def save_costing_to_db(gemid, table_data, price_basis="FIRM", applicable_index=N
     return {"success": True}
 
 
+def _build_laser_cost_payload(table_data, price_basis):
+    materials = {}
+    for t in table_data:
+        for k, v in t.get("materials", {}).items():
+            if k not in materials:
+                materials[k] = v
+
+    docket_no = None
+    costing_sheet_details = []
+    for t in table_data:
+        if docket_no is None:
+            docket_no = t.get("docket_no")
+        for row in t.get("rows", []):
+            costing_sheet_details.append({
+                "proposedErpItemName": row.get("item_name"),
+                "proposedQty": row.get("quantity"),
+                "cvaValue": row.get("cva"),
+            })
+
+    return {
+        "docketNo": docket_no,
+        "priceBasis": price_basis,
+        "rawMaterials": materials,
+        "costingSheetDetails": costing_sheet_details,
+    }
+
+
+def _send_to_laser_cost_api(payload):
+    url = f"http://{settings.LASER_TENDER_COST_API}/api/costing/parsed"
+    headers = {"Authorization": f"Bearer {settings.WORKER_API_KEY}"}
+    resp = requests.post(url, json=payload, headers=headers, timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _parse_table(ws, header_row_num, end_row):
     col_map = _build_column_map(ws, header_row_num)
     erp_col = col_map.get("propose_erp")
@@ -303,6 +339,7 @@ def _parse_table(ws, header_row_num, end_row):
 
     rows = []
     table_base_date = None
+    table_docket_no = None
     used_materials = set()
 
     location_col = None
@@ -323,6 +360,8 @@ def _parse_table(ws, header_row_num, end_row):
         has_docket = docket_val is not None and str(docket_val).strip() != ""
         if not has_docket:
             continue
+        if table_docket_no is None:
+            table_docket_no = str(docket_val).strip()
         erp_val = _cell(row_obj, erp_col)
         has_erp = erp_val is not None and str(erp_val).strip() != ""
         if not has_erp:
@@ -403,13 +442,14 @@ def _parse_table(ws, header_row_num, end_row):
 
     return {
         "base_date": table_base_date,
+        "docket_no": table_docket_no,
         "rows": rows,
         "materials": material_rates,
         "header": header,
     }
 
 
-def parse_costing_excel(gemid, appsheet_link):
+def parse_costing_excel(gemid, appsheet_link, sender=None):
     temp_dir = tempfile.gettempdir()
     safe_id = str(gemid).replace("/", "-").replace("\\", "-")
     temp_path = os.path.join(temp_dir, f"costing_{safe_id}.xlsx")
@@ -457,12 +497,18 @@ def parse_costing_excel(gemid, appsheet_link):
 
         price_basis = _find_price_basis(calc_sheets[0])
         applicable_index = _find_applicable_index(calc_sheets[0])
-        save_costing_to_db(gemid=gemid, table_data=tables, price_basis=price_basis, applicable_index=applicable_index)
+        if sender == "laser_cost":
+            payload = _build_laser_cost_payload(tables, price_basis)
+            pprint(payload)
+            _send_to_laser_cost_api(payload)
+        else:
+            save_costing_to_db(gemid=gemid, table_data=tables, price_basis=price_basis, applicable_index=applicable_index)
         result = {
             "gemid": gemid,
             "tables": tables,
             "price": price_basis,
             "applicableIndex": applicable_index,
+            "sender": sender,
         }
         logger.info("Costing parse result for %s: %s", gemid, json.dumps(result, default=str))
         return result

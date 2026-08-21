@@ -12,7 +12,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from tender_search.models import TenderMerged, TenderFiles
-from tender_search.queue import get_connection
+from tender_search.queue import get_channel
 from tender_search.queue_types import TenderParsingMessage, CostingAttachmentParsing, parsing_adapter
 from tender_search.services.pdf_parser import parse_and_save_gem_pdf
 from tender_search.services.costing_excel_parse import parse_costing_excel
@@ -32,13 +32,18 @@ FILE_SOURCE_BASE_PATH_ENV = {
 
 
 def _resolve_network_path(decrypted_file_id: str) -> str:
+    print("decrypted_file_id.......", decrypted_file_id )
     if "|" not in decrypted_file_id:
         return decrypted_file_id
     source_key, relative_path = decrypted_file_id.split("|", 1)
+    print("source_key.......", source_key)
+    print("relative_path.......", relative_path)
     env_var = FILE_SOURCE_BASE_PATH_ENV.get(source_key)
+    print("env_var.......", env_var)
     if not env_var:
         raise ValueError(f"Unknown file source key: {source_key}")
     base_path = getattr(settings, env_var, "")
+    print("base_path.......", base_path)
     if not base_path:
         raise ValueError(f"Environment variable {env_var} is not set")
     return os.path.join(base_path, relative_path)
@@ -146,11 +151,12 @@ def callback(ch, method, properties, body):
                 time.sleep(0.5)
         elif payload.type == "COSTING_ATTACHMENT_PARSING":
             if payload.file_type == "network" and payload.decrypted_fileId:
+                print("decrypted_fileId....... in if", payload.decrypted_fileId)
                 source = _resolve_network_path(payload.decrypted_fileId)
             else:
                 source = payload.file_link
             print("linkkkk.......", source)
-            excel_parse = parse_costing_excel(gemid=payload.referenceNo, appsheet_link=source)
+            excel_parse = parse_costing_excel(gemid=payload.referenceNo, appsheet_link=source, sender=payload.sender)
             if excel_parse.get("error"):
                 logger.error("Costing parse failed for %s: %s", payload.referenceNo, excel_parse["error"])
                 print(f"[tender:parsing] Costing FAILED: {payload.referenceNo} - {excel_parse['error']}")
@@ -186,12 +192,6 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--queue",
-            type=str,
-            default="tender:parsing",
-            help="Queue name to consume from (default: tender:parsing)",
-        )
-        parser.add_argument(
             "--temp-dir",
             type=str,
             default=TEMP_DIR,
@@ -199,7 +199,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        queue = options["queue"]
+        queue = settings.TENDER_PARSING_QUEUE
 
         global TEMP_DIR
         TEMP_DIR = options["temp_dir"]
@@ -219,9 +219,8 @@ class Command(BaseCommand):
         channel = None
 
         try:
-            conn = get_connection()
-            channel = conn.channel()
-            channel.queue_declare(queue=queue, durable=True)
+            channel = get_channel(queue)
+            conn = channel.connection
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue=queue, on_message_callback=callback)
 

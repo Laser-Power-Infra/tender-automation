@@ -12,7 +12,7 @@ def get_connection():
     return pika.BlockingConnection(params)
 
 
-def get_channel(queue="tender:tasks"):
+def get_channel(queue):
     conn = get_connection()
     channel = conn.channel()
     channel.queue_declare(queue=queue, durable=True)

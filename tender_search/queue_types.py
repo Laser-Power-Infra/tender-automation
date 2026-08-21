@@ -36,6 +36,7 @@ class CostingAttachmentParsing(BaseModel):
     file_link: str | None = None
     tenderId: int | None = None
     file_type: Literal["network", "external"] | None = None
+    sender: str | None = None
     decrypted_fileId: str | None = None
     timestamp: int | None = None
 
@@ -43,11 +44,13 @@ class NonGemParsing(BaseModel):
     type:Literal["NON_GEM_BOQ_PARSING"]
     referenceNo: str
     file_link: str
+    sender: str | None = None
 
 class RAGemPdfParsing(BaseModel):
     type: Literal["RA_GEM_PDF_PARSING"]
     referenceNo: str
     file_link: str
+    sender: str | None = None
 
 _ParsingMessage = Annotated[
     Union[TenderParsingMessage, CostingAttachmentParsing, NonGemParsing, RAGemPdfParsing],
