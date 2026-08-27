@@ -21,6 +21,17 @@ INSTALLED_APPS = [
     "tender_search",
 ]
 
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [],
+        },
+    },
+]
+
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
 ]
@@ -61,6 +72,9 @@ GOOGLE_DRIVE_TOKEN_PATH = BASE_DIR / os.getenv("GOOGLE_DRIVE_TOKEN_PATH", "token
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 
 TENDER_PARSING_TEMP_DIR = os.getenv("TENDER_PARSING_TEMP_DIR", r"D:\temp")
+
+DASHBOARD_LOG_DIR = os.getenv("DASHBOARD_LOG_DIR", "")
+DASHBOARD_LOG_LIMIT = int(os.getenv("DASHBOARD_LOG_LIMIT", "2000"))
 
 GDRIVE_CLIENT_EMAIL = os.getenv("GDRIVE_CLIENT_EMAIL", "")
 GDRIVE_PRIVATE_KEY = os.getenv("GDRIVE_PRIVATE_KEY", "").replace("\\n", "\n")
