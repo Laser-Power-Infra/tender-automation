@@ -17,7 +17,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 # Install only Chromium
-RUN uv run playwright install chromium
+# RUN uv run playwright install chromium
+RUN  /app/.venv/bin/playwright install chromium
 
 # Application
 COPY . .
@@ -42,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
+    libgl1 \
     libatk-bridge2.0-0 \
     libcups2 \
     libdrm2 \
