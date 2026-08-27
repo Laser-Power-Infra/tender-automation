@@ -14,9 +14,13 @@ class NonGemDownloadTask(BaseModel):
     referenceNo: str
     tenderId: int | None = None
 
+class RAGemDownloadTask(BaseModel):
+    type: Literal["RA_GEM_DOWNLOAD"]
+    referenceNo: str
+    tenderId: int | None = None
 
 _TenderTasksMessage = Annotated[
-    Union[GemDownloadTask, NonGemDownloadTask],
+    Union[GemDownloadTask, NonGemDownloadTask, RAGemDownloadTask],
     Field(discriminator="type"),
 ]
 tender_tasks_adapter: TypeAdapter = TypeAdapter(_TenderTasksMessage)
@@ -32,6 +36,7 @@ class CostingAttachmentParsing(BaseModel):
     file_link: str | None = None
     tenderId: int | None = None
     file_type: Literal["network", "external"] | None = None
+    sender: str | None = None
     decrypted_fileId: str | None = None
     timestamp: int | None = None
 
@@ -39,9 +44,16 @@ class NonGemParsing(BaseModel):
     type:Literal["NON_GEM_BOQ_PARSING"]
     referenceNo: str
     file_link: str
+    sender: str | None = None
+
+class RAGemPdfParsing(BaseModel):
+    type: Literal["RA_GEM_PDF_PARSING"]
+    referenceNo: str
+    file_link: str
+    sender: str | None = None
 
 _ParsingMessage = Annotated[
-    Union[TenderParsingMessage, CostingAttachmentParsing,NonGemParsing],
+    Union[TenderParsingMessage, CostingAttachmentParsing, NonGemParsing, RAGemPdfParsing],
     Field(discriminator="type"),
 ]
 parsing_adapter = TypeAdapter(_ParsingMessage)

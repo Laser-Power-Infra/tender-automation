@@ -3,7 +3,6 @@ import time
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 from .google_drive import upload_to_drive
-from .gem_pdf_parser_ai import extract_pdf_data
 from .gem_pdf_parser_ai import save_extraction_to_db
 from django.conf import settings
 

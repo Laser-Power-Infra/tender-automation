@@ -6,12 +6,221 @@ from datetime import datetime
 
 import openpyxl
 import requests
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from pprint import pprint
 from tender_search.models import Costingsheetdetails, Items, TenderMerged
 
 logger = logging.getLogger(__name__)
+
+# Drive URL patterns: /file/d/<id>/ and ?id=<id> (open?id=, uc?export=download&id=)
+_DRIVE_FILE_ID_RE_1 = re.compile(r"/file/d/([^/?&#]+)")
+_DRIVE_FILE_ID_RE_2 = re.compile(r"[?&]id=([^&#]+)")
+
+
+def _extract_drive_file_id(url: str) -> str | None:
+    m = _DRIVE_FILE_ID_RE_1.search(url)
+    if m:
+        return m.group(1)
+    m = _DRIVE_FILE_ID_RE_2.search(url)
+    return m.group(1) if m else None
+
+
+def _is_drive_link(url: str) -> bool:
+    return "drive.google.com" in url.lower()
+
+
+def _format_http_error(err) -> str:
+    """Return detailed HttpError string including status, reason, json body."""
+    try:
+        from googleapiclient.errors import HttpError
+        import json as _json
+        if isinstance(err, HttpError):
+            status = getattr(getattr(err, "resp", None), "status", "")
+            reason = getattr(getattr(err, "resp", None), "reason", "")
+            body = ""
+            try:
+                raw = err.content.decode("utf-8", errors="replace") if getattr(err, "content", None) else ""
+                # Try pretty json
+                try:
+                    parsed = _json.loads(raw)
+                    body = _json.dumps(parsed)
+                except Exception:
+                    body = raw[:1000]
+            except Exception:
+                body = str(err)[:1000]
+            return f"HttpError {status} {reason} - {body}"
+    except Exception:
+        pass
+    return f"{type(err).__name__}: {err}"
+
+
+def _get_service_account_service():
+    """Build service with service-account only (bypass OAuth token) for fallback."""
+    from google.oauth2.service_account import Credentials as ServiceAccountCredentials
+    from googleapiclient.discovery import build
+
+    sa_creds = ServiceAccountCredentials.from_service_account_info(
+        {
+            "client_email": settings.GDRIVE_CLIENT_EMAIL,
+            "private_key": settings.GDRIVE_PRIVATE_KEY,
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+        scopes=[
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+    )
+    return build("drive", "v3", credentials=sa_creds)
+
+
+def _download_via_api(service, file_id: str, dest_path: str) -> None:
+    from googleapiclient.http import MediaIoBaseDownload
+    import io
+
+    # Detect native Google Workspace files that need export
+    try:
+        meta = service.files().get(fileId=file_id, fields="mimeType,name").execute()
+        mime = meta.get("mimeType", "")
+    except Exception as e:
+        logger.warning("Drive files().get failed for %s: %s", file_id, _format_http_error(e))
+        mime = ""
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+    if mime == "application/vnd.google-apps.spreadsheet":
+        request = service.files().export_media(
+            fileId=file_id,
+            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    else:
+        request = service.files().get_media(fileId=file_id)
+    fh = io.FileIO(dest_path, "wb")
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.close()
+    # Verify not HTML
+    with open(dest_path, "rb") as check:
+        head = check.read(512)
+        if head.lstrip().lower().startswith(b"<!doctype html") or b"accounts.google.com" in head.lower():
+            preview = head[:300].decode("utf-8", errors="replace").replace("\n", " ")
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+            raise ValueError(f"Expected Excel, got HTML after API download. Preview: {preview}")
+
+
+def _download_drive_file(file_id: str, dest_path: str) -> None:
+    """Download a Google Drive file. Tries authenticated Drive API first, falls back to uc endpoint. Surfaces real HttpError."""
+    api_error_detail = None
+    last_api_err = None
+
+    # --- 1) Authenticated API path: try service-account (drive.readonly, can read files shared to it)
+    #        FIRST, then OAuth/user token. The token.json OAuth credential has drive.file scope only,
+    #        which returns 404 for files not created by the app (e.g. costing files owned by samrat.dey).
+    services_to_try = []
+    # Service-account first - proven to read files shared to it (drive.file + drive.readonly scopes)
+    try:
+        if getattr(settings, "GDRIVE_CLIENT_EMAIL", "") and getattr(settings, "GDRIVE_PRIVATE_KEY", ""):
+            services_to_try.append(("service-account", _get_service_account_service()))
+    except Exception as e:
+        logger.warning("Failed to build service-account service for %s: %s", file_id, _format_http_error(e))
+    # OAuth / user token fallback (drive.file scope - only works for files the app itself created)
+    try:
+        from tender_search.services.google_drive import _get_authenticated_service
+        services_to_try.append(("oauth/service", _get_authenticated_service()))
+    except Exception as e:
+        logger.warning("Failed to get OAuth/service from _get_authenticated_service for %s: %s", file_id, _format_http_error(e))
+
+    for label, service in services_to_try:
+        try:
+            _download_via_api(service, file_id, dest_path)
+            logger.info("Downloaded Drive file %s via %s API -> %s", file_id, label, dest_path)
+            return
+        except Exception as api_err:
+            err_str = str(api_err)
+            if "Expected Excel, got HTML after API download" in err_str:
+                raise
+            api_error_detail = _format_http_error(api_err)
+            last_api_err = api_err
+            logger.warning("Authenticated Drive download failed for %s via %s: %s", file_id, label, api_error_detail)
+            # Clean partial file if created
+            if os.path.exists(dest_path):
+                try:
+                    if os.path.getsize(dest_path) < 512:
+                        os.remove(dest_path)
+                except OSError:
+                    pass
+            # If 404, try next credential before falling back
+            continue
+
+    # If all API attempts failed, keep api_error_detail for final message
+    if api_error_detail:
+        logger.warning("All authenticated attempts failed for %s: %s — falling back to uc endpoint", file_id, api_error_detail)
+    else:
+        logger.warning("No authenticated service available for %s — falling back to uc endpoint", file_id)
+
+    # --- 2) Fallback: unauthenticated uc?export=download (for public anyone-with-link files) ---
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    session = requests.Session()
+    resp = session.get(url, stream=True, timeout=120)
+    resp.raise_for_status()
+
+    content_type = resp.headers.get("Content-Type", "")
+    # Large files return HTML warning page; check both header and body
+    if "text/html" in content_type.lower():
+        # Peek first chunk without consuming entire stream for confirm extraction
+        first_chunk = b""
+        for chunk in resp.iter_content(chunk_size=32768):
+            if chunk:
+                first_chunk = chunk
+                break
+        text = first_chunk.decode("utf-8", errors="replace") if first_chunk else ""
+        m = re.search(r"confirm=([0-9A-Za-z-_]+)", text)
+        if m:
+            confirm_token = m.group(1)
+            url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
+            resp = session.get(url, stream=True, timeout=120)
+            resp.raise_for_status()
+        else:
+            # Private / not shared file redirects to sign-in HTML
+            if "accounts.google.com" in text or "<!doctype html" in text.lower():
+                preview = text[:500].replace("\n", " ")
+                # Include real API error detail instead of only hardcoded text
+                api_part = f" API error: {api_error_detail}" if api_error_detail else ""
+                sa_email = getattr(settings, 'GDRIVE_CLIENT_EMAIL', '')
+                raise ValueError(
+                    f"Drive file not accessible (private or not shared) for {file_id}.{api_part} "
+                    f"uc fallback got sign-in HTML. Ensure file is shared with {sa_email} or made anyone-with-link. "
+                    f"Preview: {preview}"
+                ) from last_api_err
+            # If HTML but no confirm token and not sign-in, treat as error
+            if text.strip():
+                preview = text[:500].replace("\n", " ")
+                raise ValueError(f"Expected Excel, got HTML from Drive. Preview: {preview}")
+
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+    with open(dest_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+    # Post-write HTML sniff: Drive may return HTML with 200 + octet-stream mislabel
+    try:
+        with open(dest_path, "rb") as fh:
+            head = fh.read(512)
+            if head.lstrip().lower().startswith(b"<!doctype html") or b"accounts.google.com" in head.lower():
+                preview = head[:200].decode("utf-8", errors="replace")
+                raise ValueError(f"Expected Excel, got HTML after download. Preview: {preview}")
+    except ValueError:
+        # Remove invalid file
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        raise
 
 def _to_number(val):
     if val is None:
@@ -238,6 +447,41 @@ def save_costing_to_db(gemid, table_data, price_basis="FIRM", applicable_index=N
     return {"success": True}
 
 
+def _build_laser_cost_payload(table_data, price_basis):
+    materials = {}
+    for t in table_data:
+        for k, v in t.get("materials", {}).items():
+            if k not in materials:
+                materials[k] = v
+
+    docket_no = None
+    costing_sheet_details = []
+    for t in table_data:
+        if docket_no is None:
+            docket_no = t.get("docket_no")
+        for row in t.get("rows", []):
+            costing_sheet_details.append({
+                "proposedErpItemName": row.get("item_name"),
+                "proposedQty": row.get("quantity"),
+                "cvaValue": row.get("cva"),
+            })
+
+    return {
+        "docketNo": docket_no,
+        "priceBasis": price_basis,
+        "rawMaterials": materials,
+        "costingSheetDetails": costing_sheet_details,
+    }
+
+
+def _send_to_laser_cost_api(payload):
+    url = f"http://{settings.LASER_TENDER_COST_API}/api/costing/parsed"
+    headers = {"Authorization": f"Bearer {settings.WORKER_API_KEY}"}
+    resp = requests.post(url, json=payload, headers=headers, timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _parse_table(ws, header_row_num, end_row):
     col_map = _build_column_map(ws, header_row_num)
     erp_col = col_map.get("propose_erp")
@@ -303,6 +547,7 @@ def _parse_table(ws, header_row_num, end_row):
 
     rows = []
     table_base_date = None
+    table_docket_no = None
     used_materials = set()
 
     location_col = None
@@ -323,6 +568,8 @@ def _parse_table(ws, header_row_num, end_row):
         has_docket = docket_val is not None and str(docket_val).strip() != ""
         if not has_docket:
             continue
+        if table_docket_no is None:
+            table_docket_no = str(docket_val).strip()
         erp_val = _cell(row_obj, erp_col)
         has_erp = erp_val is not None and str(erp_val).strip() != ""
         if not has_erp:
@@ -403,13 +650,14 @@ def _parse_table(ws, header_row_num, end_row):
 
     return {
         "base_date": table_base_date,
+        "docket_no": table_docket_no,
         "rows": rows,
         "materials": material_rates,
         "header": header,
     }
 
 
-def parse_costing_excel(gemid, appsheet_link):
+def parse_costing_excel(gemid, appsheet_link, sender=None):
     temp_dir = tempfile.gettempdir()
     safe_id = str(gemid).replace("/", "-").replace("\\", "-")
     temp_path = os.path.join(temp_dir, f"costing_{safe_id}.xlsx")
@@ -418,18 +666,32 @@ def parse_costing_excel(gemid, appsheet_link):
 
     try:
         if source_is_url:
-            resp = requests.get(appsheet_link, stream=True, timeout=120)
-            resp.raise_for_status()
+            if _is_drive_link(appsheet_link):
+                file_id = _extract_drive_file_id(appsheet_link)
+                if not file_id:
+                    return {"gemid": gemid, "error": f"Could not extract Drive file ID from link: {appsheet_link}"}
+                _download_drive_file(file_id, temp_path)
+                downloaded = True
+                source_path = temp_path
+            else:
+                resp = requests.get(appsheet_link, stream=True, timeout=120)
+                resp.raise_for_status()
 
-            content_type = resp.headers.get("Content-Type", "")
-            if "html" in content_type.lower():
-                first_200 = resp.content[:200].decode("utf-8", errors="replace")
-                return {"gemid": gemid, "error": f"Expected Excel, got HTML. Preview: {first_200}"}
+                content_type = resp.headers.get("Content-Type", "")
+                if "html" in content_type.lower():
+                    first_200 = resp.content[:200].decode("utf-8", errors="replace")
+                    return {"gemid": gemid, "error": f"Expected Excel, got HTML. Preview: {first_200}"}
 
-            with open(temp_path, "wb") as f:
-                f.write(resp.content)
-            downloaded = True
-            source_path = temp_path
+                # Sniff body even if content-type is octet-stream (Drive sometimes mislabels)
+                head = resp.content[:512] if hasattr(resp, "content") else b""
+                if head.lstrip().lower().startswith(b"<!doctype html") or b"accounts.google.com" in head.lower():
+                    first_200 = head[:200].decode("utf-8", errors="replace")
+                    return {"gemid": gemid, "error": f"Expected Excel, got HTML. Preview: {first_200}"}
+
+                with open(temp_path, "wb") as f:
+                    f.write(resp.content)
+                downloaded = True
+                source_path = temp_path
         else:
             source_path = appsheet_link
             if not os.path.exists(source_path):
@@ -457,12 +719,18 @@ def parse_costing_excel(gemid, appsheet_link):
 
         price_basis = _find_price_basis(calc_sheets[0])
         applicable_index = _find_applicable_index(calc_sheets[0])
-        save_costing_to_db(gemid=gemid, table_data=tables, price_basis=price_basis, applicable_index=applicable_index)
+        if sender == "laser_cost":
+            payload = _build_laser_cost_payload(tables, price_basis)
+            pprint(payload)
+            _send_to_laser_cost_api(payload)
+        else:
+            save_costing_to_db(gemid=gemid, table_data=tables, price_basis=price_basis, applicable_index=applicable_index)
         result = {
             "gemid": gemid,
             "tables": tables,
             "price": price_basis,
             "applicableIndex": applicable_index,
+            "sender": sender,
         }
         logger.info("Costing parse result for %s: %s", gemid, json.dumps(result, default=str))
         return result
