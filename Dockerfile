@@ -16,25 +16,28 @@ COPY pyproject.toml uv.lock ./
 
 RUN uv sync --frozen --no-install-project
 
-# Install only Chromium
-# RUN uv run playwright install chromium
-RUN  /app/.venv/bin/playwright install chromium
+# Install Chromium
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       chromium \
+       ca-certificates \
+       fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
 
 # Application
 COPY . .
 
 RUN uv sync --frozen
 
-
 # ============================================================
 # Runtime
 # ============================================================
 FROM python:3.12-slim-bookworm AS runtime
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    PATH="/app/.venv/bin:$PATH"
+# ENV PYTHONDONTWRITEBYTECODE=1 \
+#     PYTHONUNBUFFERED=1 \
+#     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+#     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -67,10 +70,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/.venv /app/.venv
 
 # Chromium
-COPY --from=builder /ms-playwright /ms-playwright
+# COPY --from=builder /ms-playwright /ms-playwright
 
 # Application
-COPY . .
 
+COPY --from=builder /app /app
 # Default worker
 CMD ["python", "manage.py", "consume_tender_tasks"]

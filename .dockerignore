@@ -111,3 +111,21 @@ pip-log.txt
 .python-version
 .scrapy
 .webassets-cache
+
+
+# Git
+.git
+.gitignore
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
