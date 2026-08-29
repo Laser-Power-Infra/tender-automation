@@ -1,11 +1,11 @@
 services:
 
   automation-worker:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
-    # image: django-worker:latest
-    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: django-worker:latest
+    # image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
     # container_name:   automation-worker
     command: python manage.py consume_tender_tasks
     restart: unless-stopped
@@ -15,14 +15,56 @@ services:
       - infra
 
   parsing-worker:
-    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
+    image: django-worker:latest
+
+    # image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
     # container_name: parsing-worker
     command: python manage.py consume_tender_parsing
+    environment:
+    # Paths inside the container
+      CONDUTOR_PATH: /mnt/condutor/Tenders-bd/Condutor
+      INDEXER_NETWORK_PATH: /mnt/indexer/COSTING & INVOLVEMENT
+      SUPPLY_NETWORK_PATH: /mnt/supply
+      COSTING_FILE_NETWORK_HOST_PATH: /mnt/costing/COSTING & INVOLVEMENT
+      OLD_RA_EXCEL_PATH: /mnt/old-files/TENDER 2023-2024
+      OLD_FILES: /mnt/old-files/TENDER 2023-2024
+      TYPE_TEST_FILES_PATH: /mnt/condutor/Updated TTR
+
+    volumes:
+      - condutor:/mnt/condutor
+      - indexer:/mnt/indexer
+      - supply:/mnt/supply
+      - costing:/mnt/costing
+      - old-files:/mnt/old-files
     restart: unless-stopped
     env_file:
       - .env.production
     networks:
       - infra
+
+
+volumes:
+  condutor:
+    external: true
+    name: infrastructure_condutor
+
+  indexer:
+    external: true
+    name: infrastructure_indexer
+
+  supply:
+    external: true
+    name: infrastructure_supply
+
+  costing:
+    external: true
+    name: infrastructure_costing
+
+  old-files:
+    external: true
+    name: infrastructure_old-files
+
+
 
 networks:
   infra:
