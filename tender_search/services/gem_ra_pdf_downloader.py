@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 from .google_drive import upload_to_drive
 from .gem_pdf_parser_ai import save_extraction_to_db
+from .gem_bid_results import find_gem_id_result
 from django.conf import settings
 
 
@@ -281,6 +282,39 @@ def try_download_ra(page, gem_id: str, download_dir: str) -> dict:
     return try_download_ra_via_click(page, link, gem_id, save_path)
 
 
+def _save_bid_status_to_db(gem_id: str, status: str) -> None:
+    if not status:
+        return
+    try:
+        from tender_search.models import TenderMerged
+        gem = TenderMerged.objects.filter(referenceno=gem_id).first()
+        if not gem:
+            print(f"  {gem_id}: TenderMerged not found for status save")
+            return
+        gem.currentstatus = status.upper()
+        gem.save()
+        print(f"  {gem_id}: saved currentStatus = {gem.currentstatus}")
+    except Exception as e:
+        print(f"  {gem_id}: could not save currentStatus — {e}")
+
+
+def _extract_status_from_page(page, gem_id: str) -> str | None:
+    try:
+        delay(2000)
+        row_info = find_gem_id_result(page, gem_id)
+        if not row_info:
+            print(f"  {gem_id}: row not found for status extraction")
+            return None
+        status = row_info.get("bidStatus")
+        print(f'  {gem_id}: bid status — "{status}"')
+        if status:
+            _save_bid_status_to_db(gem_id, status)
+        return status
+    except Exception as e:
+        print(f"  {gem_id}: status extraction failed — {e}")
+        return None
+
+
 def download_ra_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
     chrome_path = os.environ.get("CHROME_PATH") or detect_chrome_path()
     saved_path = None
@@ -299,6 +333,7 @@ def download_ra_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
         print(f"  {gem_id}: searching ongoing bids...")
         perform_search(page, gem_id, check_bid_ra_status=False)
         if wait_for_search_results(page, gem_id):
+            _extract_status_from_page(page, gem_id)
             result = try_download_ra(page, gem_id, download_dir)
             if result["success"]:
                 saved_path = result["pdfPath"]
@@ -306,6 +341,7 @@ def download_ra_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
                 print(f"  {gem_id}: ongoing RA download failed, trying with bid/ra status...")
                 perform_search(page, gem_id, check_bid_ra_status=True)
                 if wait_for_search_results(page, gem_id):
+                    _extract_status_from_page(page, gem_id)
                     result = try_download_ra(page, gem_id, download_dir)
                     if result["success"]:
                         saved_path = result["pdfPath"]
@@ -313,6 +349,7 @@ def download_ra_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
             print(f"  {gem_id}: no data found in ongoing bids, trying with bid/ra status...")
             perform_search(page, gem_id, check_bid_ra_status=True)
             if wait_for_search_results(page, gem_id):
+                _extract_status_from_page(page, gem_id)
                 result = try_download_ra(page, gem_id, download_dir)
                 if result["success"]:
                     saved_path = result["pdfPath"]
