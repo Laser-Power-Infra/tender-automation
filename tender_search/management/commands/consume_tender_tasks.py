@@ -37,7 +37,7 @@ def callback(ch, method, properties, body):
         print(f"[tender:tasks] Received: type={payload.type} payload={raw}")
 
         if isinstance(payload, GemDownloadTask):
-            gem_result = download_gem_pdf(payload.gemId)
+            gem_result = download_gem_pdf(payload.referenceNo)
             print("GEM_RESULT.....................", gem_result)
 
             if gem_result.get("success"):

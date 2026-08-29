@@ -17,12 +17,12 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 # Install Chromium
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       chromium \
-       ca-certificates \
-       fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
+# RUN apt-get update \
+#     && apt-get install -y --no-install-recommends \
+#        chromium \
+#        ca-certificates \
+#        fonts-liberation \
+#     && rm -rf /var/lib/apt/lists/*
 
 # Application
 COPY . .
@@ -34,6 +34,9 @@ RUN uv sync --frozen
 # ============================================================
 FROM python:3.12-slim-bookworm AS runtime
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
 # ENV PYTHONDONTWRITEBYTECODE=1 \
 #     PYTHONUNBUFFERED=1 \
 #     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -63,6 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libcairo2 \
     fonts-liberation \
+      chromium \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -75,5 +79,7 @@ COPY --from=builder /app/.venv /app/.venv
 # Application
 
 COPY --from=builder /app /app
+# Make sure the venv is used
+ENV PATH="/app/.venv/bin:$PATH"
 # Default worker
 CMD ["python", "manage.py", "consume_tender_tasks"]

@@ -7,6 +7,7 @@ class GemDownloadTask(BaseModel):
     type: Literal["GEM_DOWNLOAD"]
     gemId: str
     tenderId: int
+    referenceNo:str
 
 
 class NonGemDownloadTask(BaseModel):
