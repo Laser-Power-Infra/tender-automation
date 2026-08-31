@@ -54,6 +54,17 @@ jobs:
     needs: build-and-push
     runs-on: self-hosted
     steps:
+        # 🟢 Step 1: Checkout the latest repo code on the server runner
+      - name: Checkout Latest Code
+        uses: actions/checkout@v4
+
+      # 🟢 Step 2: Copy the latest docker-compose.yml to D://
+      - name: Sync Latest docker-compose.yml
+        shell: powershell
+        run: |
+          Copy-Item -Path "docker-compose.yml" -Destination "D:/tender-automation/docker-compose.yml" -Force
+          Write-Host "✅ Synced latest docker-compose.yml to D:/tender-automation/"
+
       - name: Pull and Restart Container
         shell: powershell
         working-directory: D:/tender-automation
