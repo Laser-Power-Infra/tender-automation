@@ -36,6 +36,8 @@ services:
       - supply:/mnt/supply
       - costing:/mnt/costing
       - old-files:/mnt/old-files
+      - ./credentials.json:/app/credentials:ro
+      - ./token.json:/app/token:rw
     restart: unless-stopped
     env_file:
       - .env.production
