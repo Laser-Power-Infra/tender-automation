@@ -1,11 +1,11 @@
 services:
 
   automation-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: django-worker:latest
-    # image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    # image: django-worker:latest
+    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
     # container_name:   automation-worker
     command: python manage.py consume_tender_tasks
     restart: unless-stopped
