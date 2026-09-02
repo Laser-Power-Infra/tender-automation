@@ -68,6 +68,6 @@ volumes:
 
 
 
-networks:
+networks: 
   infra:
     external: true
