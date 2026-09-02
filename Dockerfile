@@ -1,50 +1,40 @@
 # ============================================================
-# Builder
+# Stage 1: Builder (with UV cache enabled)
 # ============================================================
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
-# Dependency layer
+# 1. Copy dependency definitions first
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-install-project
+# 2. 🟢 Cache UV downloads so dependencies aren't re-downloaded from scratch
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
 
-# Install Chromium
-# RUN apt-get update \
-#     && apt-get install -y --no-install-recommends \
-#        chromium \
-#        ca-certificates \
-#        fonts-liberation \
-#     && rm -rf /var/lib/apt/lists/*
-
-# Application
+# 3. Copy source code and install project
 COPY . .
 
-RUN uv sync --frozen
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 # ============================================================
-# Runtime
+# Stage 2: Lean Runtime
 # ============================================================
 FROM python:3.12-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
-# ENV PYTHONDONTWRITEBYTECODE=1 \
-#     PYTHONUNBUFFERED=1 \
-#     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-#     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
-# Playwright/Chromium runtime dependencies
+# Install Playwright/Chromium runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
@@ -63,23 +53,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     libatspi2.0-0 \
     libgtk-3-0 \
-    libpango-1.0-0 \
+    libpango-1-0-0 \
     libcairo2 \
     fonts-liberation \
-      chromium \
+    chromium \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Python environment
-COPY --from=builder /app/.venv /app/.venv
-
-# Chromium
-# COPY --from=builder /ms-playwright /ms-playwright
-
-# Application
-
+# Copy the pre-built virtual environment and app from builder
 COPY --from=builder /app /app
-# Make sure the venv is used
-ENV PATH="/app/.venv/bin:$PATH"
-# Default worker
+
+# Default command (overridden by docker-compose commands)
 CMD ["python", "manage.py", "consume_tender_tasks"]

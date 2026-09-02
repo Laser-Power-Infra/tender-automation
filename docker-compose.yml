@@ -1,12 +1,9 @@
-services:
+version: '3.8'
 
+services:
   automation-worker:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
-    # image: django-worker:latest
-    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
-    # container_name:   automation-worker
+    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION:-latest}
+    # No container_name here (required for --scale to work!)
     command: python manage.py consume_tender_tasks
     restart: unless-stopped
     env_file:
@@ -15,13 +12,11 @@ services:
       - infra
 
   parsing-worker:
-    image: django-worker:latest
-
-    # image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION}
-    # container_name: parsing-worker
+    # 🟢 Fixed: Now points to the correct GHCR image
+    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION:-latest}
+    # No container_name here (required for --scale to work!)
     command: python manage.py consume_tender_parsing
     environment:
-    # Paths inside the container
       CONDUTOR_PATH: /mnt/condutor/Tenders-bd/Condutor
       INDEXER_NETWORK_PATH: /mnt/indexer/COSTING & INVOLVEMENT
       SUPPLY_NETWORK_PATH: /mnt/supply
@@ -36,14 +31,14 @@ services:
       - supply:/mnt/supply
       - costing:/mnt/costing
       - old-files:/mnt/old-files
-      - ./credentials.json:/app/credentials:ro
-      - ./token.json:/app/token:rw
+      # Host credentials mounted into the container
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json:rw
     restart: unless-stopped
     env_file:
       - .env.production
     networks:
       - infra
-
 
 volumes:
   condutor:
@@ -65,8 +60,6 @@ volumes:
   old-files:
     external: true
     name: infrastructure_old-files
-
-
 
 networks:
   infra:
