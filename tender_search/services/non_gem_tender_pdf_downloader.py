@@ -3,6 +3,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from .browser import detect_chrome_path
+from .file_storage import file_storage
 from .google_drive import upload_to_drive
 
 
@@ -108,9 +109,18 @@ def login_tender247(email: str, password: str, tender_id: str = "", drive_folder
             browser.close()
 
     if file_path and drive_folder_id and result_data.get("success"):
-        print(f"[Tender247] Uploading to Google Drive...")
+        print(f"[Tender247] Uploading to S3 + Google Drive...")
+        try:
+            s3_res = file_storage.upload(str(file_path), reference_no=tender_id)
+            result_data["s3"] = s3_res
+            result_data["s3_url"] = s3_res["url"]
+            print(f"[Tender247] S3 Uploaded: {s3_res['key']} — {s3_res['url']}")
+        except Exception as e:
+            print(f"[Tender247] S3 upload failed: {e}")
+            result_data["s3"] = {}
+            result_data["s3_url"] = ""
         drive_result = upload_to_drive(str(file_path), folder_id=drive_folder_id)
-        print(f"[Tender247] Uploaded: {drive_result['name']} — {drive_result['webViewLink']}")
+        print(f"[Tender247] Drive Uploaded: {drive_result['name']} — {drive_result['webViewLink']}")
         result_data["drive"] = drive_result
 
     return result_data

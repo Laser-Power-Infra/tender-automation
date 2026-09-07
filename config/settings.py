@@ -79,6 +79,12 @@ DASHBOARD_LOG_LIMIT = int(os.getenv("DASHBOARD_LOG_LIMIT", "2000"))
 GDRIVE_CLIENT_EMAIL = os.getenv("GDRIVE_CLIENT_EMAIL", "")
 GDRIVE_PRIVATE_KEY = os.getenv("GDRIVE_PRIVATE_KEY", "").replace("\\n", "\n")
 
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
+S3_BUCKET = os.getenv("S3_BUCKET", "")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
+S3_REGION = os.getenv("S3_REGION", "us-east-1")
+
 INDEXER_NETWORK_PATH = os.getenv("INDEXER_NETWORK_PATH", "")
 COSTING_FILE_NETWORK_PATH = os.getenv("COSTING_FILE_NETWORK_PATH", "")
 CONDUTOR_PATH = os.getenv("CONDUTOR_PATH", "")

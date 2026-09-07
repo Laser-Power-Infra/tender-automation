@@ -4,6 +4,7 @@ from playwright.sync_api import sync_playwright
 from django.conf import settings
 
 from .browser import detect_chrome_path
+from .file_storage import file_storage
 from .google_drive import upload_to_drive
 
 
@@ -46,11 +47,20 @@ def login_tiger(email: str, password: str, reference_no: str, drive_folder_id=No
             browser.close()
 
     if file_path and drive_folder_id and result_data.get("success"):
-        print(f"[Tiger] Uploading {file_path.name} to Google Drive...")
+        print(f"[Tiger] Uploading {file_path.name} to S3 + Google Drive...")
+        try:
+            s3_res = file_storage.upload(str(file_path), reference_no=reference_no)
+            result_data["s3"] = s3_res
+            result_data["s3_url"] = s3_res["url"]
+            print(f"[Tiger] S3 Uploaded: {s3_res['key']} — {s3_res['url']}")
+        except Exception as e:
+            print(f"[Tiger] S3 upload failed: {e}")
+            result_data["s3"] = {}
+            result_data["s3_url"] = ""
         drive_result = upload_to_drive(str(file_path), folder_id=drive_folder_id)
         result_data["drive_url"] = drive_result.get("webViewLink", "")
         result_data["drive"] = drive_result
-        print(f"[Tiger] Uploaded: {drive_result['name']} — {result_data['drive_url']}")
+        print(f"[Tiger] Drive Uploaded: {drive_result['name']} — {result_data['drive_url']}")
 
     return result_data
 

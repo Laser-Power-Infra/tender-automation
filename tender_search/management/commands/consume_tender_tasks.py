@@ -57,10 +57,12 @@ def callback(ch, method, properties, body):
             print("RA_RESULT.....................", ra_result)
 
             if ra_result.get("success"):
+                # ponytail: prefer S3 URL (public bucket), fallback to Drive
+                s3_link = ra_result.get("s3Link") or ra_result.get("driveLink", "")
                 ch.basic_publish(
                     exchange="",
                     routing_key=settings.TENDER_PARSING_QUEUE,
-                    body=json.dumps({"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": ra_result.get("driveLink")}),
+                    body=json.dumps({"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": s3_link}),
                     properties=pika.BasicProperties(delivery_mode=2),
                 )
                 logger.info("Published RA GEM parsing job for %s", payload.referenceNo)
@@ -80,15 +82,18 @@ def callback(ch, method, properties, body):
             result = login_tender247(email, password, reference_no, drive_folder_id)
 
             if result.get("success"):
+                # ponytail: public bucket URL, prefer S3, fallback Drive
+                s3 = result.get("s3", {})
                 drive = result.get("drive", {})
+                file_url = s3.get("url") or drive.get("webViewLink", "")
+                file_name = (s3.get("key") or drive.get("name", "")).split("/")[-1] if (s3.get("key") or drive.get("name")) else ""
+                extension = Path(file_name).suffix if file_name else ""
                 tender_merged = TenderMerged.objects.filter(referenceno=reference_no).first()
                 if tender_merged:
-                    file_name = drive.get("name", "")
-                    extension = Path(file_name).suffix if file_name else ""
                     TenderFiles.objects.create(
                         name=file_name,
                         extension=extension,
-                        url=drive.get("webViewLink", ""),
+                        url=file_url,
                         source="tender247",
                         tags=["tenderDocument"],
                         tendermergedid=tender_merged,
@@ -101,7 +106,7 @@ def callback(ch, method, properties, body):
                         body=json.dumps({
                             "type": "NON_GEM_BOQ_PARSING",
                             "referenceNo": reference_no,
-                            "file_link": drive.get("webViewLink", ""),
+                            "file_link": file_url,
                         }),
                         properties=pika.BasicProperties(delivery_mode=2),
                     )
@@ -112,15 +117,17 @@ def callback(ch, method, properties, body):
                 tiger_password = settings.TENDER_TIGER_PASSWORD
                 tiger_result = login_tiger(tiger_email, tiger_password, reference_no, drive_folder_id)
                 if tiger_result.get("success"):
+                                s3 = tiger_result.get("s3", {})
                                 drive = tiger_result.get("drive", {})
+                                file_url = s3.get("url") or drive.get("webViewLink", "")
+                                file_name = (s3.get("key") or drive.get("name", "")).split("/")[-1] if (s3.get("key") or drive.get("name")) else ""
+                                extension = Path(file_name).suffix if file_name else ""
                                 tender_merged = TenderMerged.objects.filter(referenceno=reference_no).first()
                                 if tender_merged:
-                                    file_name = drive.get("name", "")
-                                    extension = Path(file_name).suffix if file_name else ""
                                     TenderFiles.objects.create(
                                         name=file_name,
                                         extension=extension,
-                                        url=drive.get("webViewLink", ""),
+                                        url=file_url,
                                         source="tendertiger",
                                         tags=["tenderDocument"],
                                         tendermergedid=tender_merged,
@@ -133,7 +140,7 @@ def callback(ch, method, properties, body):
                                         body=json.dumps({
                                             "type": "NON_GEM_BOQ_PARSING",
                                             "referenceNo": reference_no,
-                                            "file_link": drive.get("webViewLink", ""),
+                                            "file_link": file_url,
                                         }),
                                         properties=pika.BasicProperties(delivery_mode=2),
                                     )
