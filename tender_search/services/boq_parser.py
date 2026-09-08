@@ -382,6 +382,18 @@ def process_boq(reference_no: str, file_link: str | None = None, drive_link: str
 
         is_zip = zipfile.is_zipfile(download_path)
         is_xlsx_direct = _is_direct_xlsx_zip(download_path) if is_zip else False
+        # ponytail: S3 per-file already extracted via zip_utils — skip zip if link is direct excel/csv
+        link_lower = link.lower().split("?")[0]
+        # handle %2F encoded keys — check after decoding
+        try:
+            from urllib.parse import unquote
+            link_lower = unquote(link_lower)
+        except Exception:
+            pass
+        if link_lower.endswith((".xls", ".xlsx", ".csv")):
+            logger.info("Link %s indicates direct file, skipping zip extract", link)
+            is_zip = False
+            is_xlsx_direct = link_lower.endswith(".xlsx")
 
         if is_zip and not is_xlsx_direct:
             # ponytail: container zip -> extract + find BOQ; ceiling: assumes container not xlsx; upgrade to Content-Disposition check if Drive mangles name

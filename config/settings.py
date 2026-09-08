@@ -60,6 +60,7 @@ WORKER_API_KEY = os.getenv("WORKER_API_KEY", "")
 
 TENDER_TASKS_QUEUE = os.getenv("TENDER_TASKS_QUEUE", "tender:tasks")
 TENDER_PARSING_QUEUE = os.getenv("TENDER_PARSING_QUEUE", "tender:parsing")
+AGENT_INGESTION_QUEUE = os.getenv("AGENT_INGESTION_QUEUE", "agent:ingestion")
 
 TENDER_TIGER_EMAIL = os.getenv("TENDER_TIGER_EMAIL", "")
 TENDER_TIGER_PASSWORD = os.getenv("TENDER_TIGER_PASSWORD", "")

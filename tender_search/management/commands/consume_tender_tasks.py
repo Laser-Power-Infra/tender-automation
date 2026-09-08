@@ -22,6 +22,26 @@ from tender_search.constants import TENDER_FILE_TYPES
 logger = logging.getLogger(__name__)
 import asyncio
 
+
+def _publish_ingestion(ch, reference_no: str, files: list[dict]):
+    # ponytail: fire-and-forget, best-effort; upgrade to retry/nack if ingestion becomes critical
+    try:
+        publish(ch, settings.AGENT_INGESTION_QUEUE, {"referenceNo": reference_no, "files": files})
+        logger.info("Published agent:ingestion for %s files=%d", reference_no, len(files))
+        print(f"[agent:ingestion] Published for {reference_no} files={len(files)}")
+    except Exception as e:
+        logger.warning("agent:ingestion publish failed for %s: %s", reference_no, e)
+
+
+def _s3_to_ingestion_file(s3: dict | None) -> dict | None:
+    url = (s3 or {}).get("url") or ""
+    if not url:
+        return None
+    key = (s3 or {}).get("key") or url
+    filename = key.split("/")[-1] or Path(url).name or "file"
+    ext = Path(filename).suffix.lstrip(".").lower()
+    return {"filename": filename, "filetype": ext or "pdf", "fileurl": url}
+
 if hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -42,8 +62,17 @@ def callback(ch, method, properties, body):
             print("GEM_RESULT.....................", gem_result)
 
             if gem_result.get("success"):
-                publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "GEM_PDF_PARSING", "referenceNo": payload.gemId})
-                logger.info("Published GEM parsing job for %s", payload.gemId)
+                publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "GEM_PDF_PARSING", "referenceNo": payload.referenceNo})
+                logger.info("Published GEM parsing job for %s", payload.referenceNo)
+                # ponytail: single file via s3Link/driveLink, map to ingestion format
+                link = gem_result.get("s3Link") or gem_result.get("driveLink") or ""
+                if link:
+                    pdf_path = gem_result.get("pdfPath") or ""
+                    filename = Path(pdf_path).name if pdf_path else link.split("/")[-1].split("?")[0] or f"{payload.referenceNo}.pdf"
+                    filetype = Path(filename).suffix.lstrip(".").lower() or "pdf"
+                    _publish_ingestion(ch, payload.referenceNo, [{"filename": filename, "filetype": filetype, "fileurl": link}])
+                else:
+                    _publish_ingestion(ch, payload.referenceNo, [])
             else:
                 logger.error("GEM_DOWNLOAD failed for %s: %s", payload.gemId, gem_result.get("error"))
 
@@ -57,6 +86,13 @@ def callback(ch, method, properties, body):
                 s3_link = ra_result.get("s3Link") or ra_result.get("driveLink", "")
                 publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": s3_link})
                 logger.info("Published RA GEM parsing job for %s", payload.referenceNo)
+                if s3_link:
+                    pdf_path = ra_result.get("pdfPath") or ""
+                    filename = Path(pdf_path).name if pdf_path else s3_link.split("/")[-1].split("?")[0] or f"{payload.referenceNo}.pdf"
+                    filetype = Path(filename).suffix.lstrip(".").lower() or "pdf"
+                    _publish_ingestion(ch, payload.referenceNo, [{"filename": filename, "filetype": filetype, "fileurl": s3_link}])
+                else:
+                    _publish_ingestion(ch, payload.referenceNo, [])
             else:
                 logger.error("RA_GEM_DOWNLOAD failed for %s: %s", payload.referenceNo, ra_result.get("error"))
 
@@ -110,6 +146,9 @@ def callback(ch, method, properties, body):
                 else:
                     logger.warning("TenderMerged NOT FOUND for %s — skipping TenderFiles + publish", reference_no)
                     print(f"[Tender247] TenderMerged NOT FOUND for {reference_no} — skipping publish")
+                # ponytail: publish all files to agent:ingestion (success or not-found still has files)
+                _files = [f for s in s3_list if (f := _s3_to_ingestion_file(s)) is not None]
+                _publish_ingestion(ch, str(reference_no), _files)
                 logger.info(f"[NON_GEM_DOWNLOAD] Result for {reference_no}: files={len(s3_list)} success={result.get('success')}")
             else:
                 tiger_email = settings.TENDER_TIGER_EMAIL
@@ -153,6 +192,8 @@ def callback(ch, method, properties, body):
                                 else:
                                     logger.warning("TenderMerged NOT FOUND for %s — skipping TenderFiles + publish", reference_no)
                                     print(f"[Tiger] TenderMerged NOT FOUND for {reference_no} — skipping publish")
+                                _files = [f for s in s3_list if (f := _s3_to_ingestion_file(s)) is not None]
+                                _publish_ingestion(ch, str(reference_no), _files)
                                 logger.info(f"[NON_GEM_DOWNLOAD] Tiger success for {reference_no}: files={len(s3_list)} success={tiger_result.get('success')}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
         else:
@@ -185,6 +226,8 @@ class Command(BaseCommand):
             conn = channel.connection
             ensure = get_channel(settings.TENDER_PARSING_QUEUE)
             ensure.connection.close()
+            ensure2 = get_channel(settings.AGENT_INGESTION_QUEUE)
+            ensure2.connection.close()
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue=queue, on_message_callback=callback)
 

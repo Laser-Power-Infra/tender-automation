@@ -84,6 +84,19 @@ def _download_from_drive(file_id: str, dest_path: str) -> bool:
     return True
 
 
+def _download_from_url(url: str, dest_path: str) -> bool:
+    # ponytail: direct http download for 192.168 tender-document urls; no auth/retry, add if needed
+    session = requests.Session()
+    response = session.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    with open(dest_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+    return True
+
+
 def callback(ch, method, properties, body):
     try:
         raw = json.loads(body)
@@ -108,15 +121,20 @@ def callback(ch, method, properties, body):
             ).first()
             if not tf or not tf.url:
                 raise ValueError(f"No tenderDocument URL for {reference_no}")
-            file_id = _extract_drive_file_id(tf.url)
-            if not file_id:
-                raise ValueError(f"Could not extract Drive file ID from URL: {tf.url}")
 
             safe_name = reference_no.replace("/", "-")
             pdf_path = os.path.join(TEMP_DIR, f"{safe_name}.pdf")
 
-            logger.info("Downloading file_id=%s -> %s", file_id, pdf_path)
-            _download_from_drive(file_id, pdf_path)
+            file_id = _extract_drive_file_id(tf.url)
+            if file_id:
+                logger.info("Downloading file_id=%s -> %s", file_id, pdf_path)
+                _download_from_drive(file_id, pdf_path)
+            elif tf.url.startswith("http://") or tf.url.startswith("https://"):
+                # ponytail: direct tender-document url (e.g. 192.168.1.190), bypass Drive; add auth if needed
+                logger.info("Downloading direct URL -> %s : %s", pdf_path, tf.url)
+                _download_from_url(tf.url, pdf_path)
+            else:
+                raise ValueError(f"Could not extract Drive file ID from URL: {tf.url}")
 
             try:
                 logger.info("Parsing PDF for %s...", reference_no)
@@ -168,7 +186,7 @@ def callback(ch, method, properties, body):
             ch.basic_ack(delivery_tag=method.delivery_tag)
         elif payload.type == "NON_GEM_BOQ_PARSING":
             print("linkkkk.......",payload.file_link)
-            boq_parse= process_boq(reference_no=payload.referenceNo, file_link=payload.file_link)
+            boq_parse= process_boq(reference_no=payload.referenceNo, drive_link=payload.file_link)
             logger.info("SUCCESS: BOQ attachment parsed for %s", payload.referenceNo)
             print( "..........Parsed  BOQ excel...........",)
             print(f"[tender:parsing] BOQSUCCESS: {boq_parse}")

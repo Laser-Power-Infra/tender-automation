@@ -72,6 +72,19 @@ def download_from_drive(file_id: str, dest_path: str) -> str:
     return dest_path
 
 
+def download_from_url(url: str, dest_path: str) -> str:
+    # ponytail: direct http for 192.168 tender-document; no auth/retry, add if needed
+    session = requests.Session()
+    response = session.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    with open(dest_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+    return dest_path
+
+
 def parse_ra_document(pdf_path: str) -> dict:
     start_date = None
     end_date = None
@@ -105,18 +118,23 @@ def process_ra_document(reference_no: str, drive_link: str) -> dict:
         "error": None,
     }
 
-    file_id = extract_drive_file_id(drive_link)
-    if not file_id:
-        result["error"] = f"Could not extract file ID from Drive link: {drive_link}"
-        return result
-
     temp_dir = getattr(settings, "TENDER_PARSING_TEMP_DIR", tempfile.gettempdir())
     safe_name = reference_no.replace("/", "-").replace("\\", "-")
     pdf_path = os.path.join(temp_dir, f"{safe_name}_ra.pdf")
 
+    file_id = extract_drive_file_id(drive_link)
+
     try:
-        logger.info("Downloading file_id=%s -> %s", file_id, pdf_path)
-        download_from_drive(file_id, pdf_path)
+        if file_id:
+            logger.info("Downloading file_id=%s -> %s", file_id, pdf_path)
+            download_from_drive(file_id, pdf_path)
+        elif drive_link.startswith("http://") or drive_link.startswith("https://"):
+            # ponytail: direct tender-document url, bypass Drive; ceiling: no auth, add header if 192.168 requires
+            logger.info("Downloading direct URL -> %s : %s", pdf_path, drive_link)
+            download_from_url(drive_link, pdf_path)
+        else:
+            result["error"] = f"Could not extract file ID from Drive link: {drive_link}"
+            return result
 
         logger.info("Parsing RA document for %s...", reference_no)
         parsed = parse_ra_document(pdf_path)
