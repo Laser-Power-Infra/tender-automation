@@ -1,5 +1,6 @@
 import boto3
 from pathlib import Path
+from urllib.parse import quote
 from django.conf import settings
 
 
@@ -15,14 +16,18 @@ def _client():
 
 
 class FileStorageService:
-    # ponytail: single self-hosted bucket, per-referenceNo prefix, no mkdir needed (S3 prefix)
+    # ponytail: flat folder per tender, replace / with _ to avoid nested prefix
     def upload(self, file_path, reference_no=None, key=None, extra_args=None):
         p = Path(file_path)
         fname = key or p.name
-        k = f"{reference_no.strip('/')}/{fname}" if reference_no else fname
+        safe_ref = reference_no.replace("/", "_").replace("\\", "_").strip() if reference_no else ""
+        k = f"{safe_ref}/{fname}" if safe_ref else fname
         bucket = settings.S3_BUCKET
         _client().upload_file(str(p), bucket, k, ExtraArgs=extra_args or {})
-        url = f"{settings.S3_ENDPOINT_URL.rstrip('/')}/{bucket}/{k}"
+        # ponytail: S3_ENDPOINT_URL for upload, PUBLIC_URL_ENV for public DB URL, stdlib quote encodes / to %2F
+        public_base = getattr(settings, "S3_PUBLIC_URL", "") or settings.S3_ENDPOINT_URL
+        encoded_key = quote(k, safe="")
+        url = f"{public_base.rstrip('/')}/{bucket}/{encoded_key}"
         return {"bucket": bucket, "key": k, "url": url}
 
     # ponytail: no presigned URL, add generate_presigned_url when frontend needs it

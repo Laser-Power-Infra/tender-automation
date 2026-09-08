@@ -84,6 +84,7 @@ S3_BUCKET = os.getenv("S3_BUCKET", "")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
 S3_REGION = os.getenv("S3_REGION", "us-east-1")
+S3_PUBLIC_URL = os.getenv("PUBLIC_URL_ENV", os.getenv("S3_PUBLIC_URL", ""))
 
 INDEXER_NETWORK_PATH = os.getenv("INDEXER_NETWORK_PATH", "")
 COSTING_FILE_NETWORK_PATH = os.getenv("COSTING_FILE_NETWORK_PATH", "")
