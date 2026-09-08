@@ -237,7 +237,7 @@ def download_gem_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             executable_path=chrome_path,
-            headless=True,
+            headless=settings.HEADLESS_BROWSER,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-features=ChromeWhatsNewUI",
@@ -274,7 +274,7 @@ def download_gem_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
         # print(f"  {gem_id}: running AI extraction...")
         # ai_res = extract_pdf_data(pdf_path=saved_path, gem_id=gem_id)
 
-        print(f"  {gem_id}: uploading to S3 + Drive...")
+        print(f"  {gem_id}: uploading to S3...")
         try:
             s3_res = file_storage.upload(saved_path, reference_no=gem_id)
             s3_url = s3_res["url"]
@@ -282,11 +282,13 @@ def download_gem_pdf(gem_id: str, download_dir: str = r"D:\temp") -> dict:
         except Exception as e:
             print(f"  {gem_id}: S3 upload failed: {e}")
             s3_url = ""
-        drive_res = upload_to_drive(saved_path,folder_id=settings.GOOGLE_DRIVE_FOLDER_ID)
-        drive_url = drive_res.get("webViewLink", "")
-        print(f"  {gem_id}: Drive link: {drive_url}")
-        if not s3_url:
-            s3_url = drive_url
+        # ponytail: drive upload disabled — s3 only
+        # drive_res = upload_to_drive(saved_path,folder_id=settings.GOOGLE_DRIVE_FOLDER_ID)
+        # drive_url = drive_res.get("webViewLink", "")
+        # print(f"  {gem_id}: Drive link: {drive_url}")
+        drive_url = ""
+        # if not s3_url:
+        #     s3_url = drive_url
         save_extraction_to_db(referenceno=gem_id,
             file_tag="tenderDocument",
             file_url=s3_url,

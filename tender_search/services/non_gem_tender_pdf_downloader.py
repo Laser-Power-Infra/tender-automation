@@ -2,9 +2,12 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from django.conf import settings
+
 from .browser import detect_chrome_path
 from .file_storage import file_storage
 from .google_drive import upload_to_drive
+from .zip_utils import extract_and_upload
 
 
 import asyncio
@@ -24,7 +27,7 @@ def login_tender247(email: str, password: str, tender_id: str = "", drive_folder
     chrome_path = detect_chrome_path()
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(executable_path=chrome_path, headless=True)
+        browser = pw.chromium.launch(executable_path=chrome_path, headless=settings.HEADLESS_BROWSER)
         page = browser.new_page(viewport={"width": 1920, "height": 1080})
 
         try:
@@ -108,19 +111,19 @@ def login_tender247(email: str, password: str, tender_id: str = "", drive_folder
         finally:
             browser.close()
 
-    if file_path and drive_folder_id and result_data.get("success"):
-        print(f"[Tender247] Uploading to S3 + Google Drive...")
+    if file_path and result_data.get("success"):
         try:
-            s3_res = file_storage.upload(str(file_path), reference_no=tender_id)
-            result_data["s3"] = s3_res
-            result_data["s3_url"] = s3_res["url"]
-            print(f"[Tender247] S3 Uploaded: {s3_res['key']} — {s3_res['url']}")
+            s3_list = extract_and_upload(file_path, tender_id)
         except Exception as e:
-            print(f"[Tender247] S3 upload failed: {e}")
-            result_data["s3"] = {}
-            result_data["s3_url"] = ""
-        drive_result = upload_to_drive(str(file_path), folder_id=drive_folder_id)
-        print(f"[Tender247] Drive Uploaded: {drive_result['name']} — {drive_result['webViewLink']}")
-        result_data["drive"] = drive_result
+            print(f"[Tender247] Extract/upload failed: {e}")
+            s3_list = []
+        result_data["s3_list"] = s3_list
+        result_data["s3"] = s3_list[0] if s3_list else {}
+        result_data["s3_url"] = s3_list[0]["url"] if s3_list else ""
+        result_data["drive"] = {}
+        result_data["drive_url"] = ""
+        result_data["file_count"] = len(s3_list)
+        if s3_list:
+            print(f"[Tender247] Uploaded {len(s3_list)} files for {tender_id}")
 
     return result_data

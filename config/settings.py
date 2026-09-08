@@ -94,3 +94,5 @@ USE_TZ = False
 
 
 CHROME_PATH= os.getenv("CHROME_PATH")
+
+HEADLESS_BROWSER = os.getenv("HEADLESS_BROWSER", "true").lower() not in ("false", "0", "no", "off")

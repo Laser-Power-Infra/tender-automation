@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -6,35 +7,41 @@ from django.conf import settings
 from .browser import detect_chrome_path
 from .file_storage import file_storage
 from .google_drive import upload_to_drive
+from .zip_utils import extract_and_upload
+
+logger = logging.getLogger(__name__)
+
+
+def _tiger_login(page, email: str, password: str) -> bool:
+    print(f"[Tiger] Navigating to login page...")
+    page.goto(
+        "https://www.tendertiger.com/User/Account?login",
+        wait_until="networkidle",
+        timeout=30000,
+    )
+    page.locator('input[name="Email"]').fill(email)
+    page.locator('input[name="Password"]').fill(password)
+    page.locator("#btnlogin").click()
+    page.wait_for_timeout(5000)
+    return "dashboard" in page.url.lower()
 
 
 def login_tiger(email: str, password: str, reference_no: str, drive_folder_id=None) -> dict:
+    # ponytail: single browser per call, re-login each task — add persistent context if throughput matters
     chrome_path = detect_chrome_path()
-    file_path = None
+    zip_path = None
     result_data = {}
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(executable_path=chrome_path, headless=True)
+        browser = pw.chromium.launch(executable_path=chrome_path, headless=settings.HEADLESS_BROWSER)
         page = browser.new_page()
 
         try:
-            print(f"[Tiger] Navigating to login page...")
-            page.goto(
-                "https://www.tendertiger.com/User/Account?login",
-                wait_until="networkidle",
-                timeout=30000,
-            )
-            page.locator('input[name="Email"]').fill(email)
-            page.locator('input[name="Password"]').fill(password)
-            page.locator("#btnlogin").click()
-
-            page.wait_for_timeout(5000)
-
-            success = "dashboard" in page.url.lower()
+            success = _tiger_login(page, email, password)
 
             if success:
                 detail_page = _search_by_reference(page, reference_no)
-                file_path = _download_docs(detail_page, reference_no)
+                zip_path = _download_docs(detail_page, reference_no)
 
             result_data = {
                 "success": success,
@@ -42,50 +49,129 @@ def login_tiger(email: str, password: str, reference_no: str, drive_folder_id=No
                 "title": page.title(),
             }
         except Exception as e:
+            logger.exception("[Tiger] failed for %s: %s", reference_no, e)
+            print(f"[Tiger] ERROR: {e}")
             result_data = {"success": False, "error": str(e)}
         finally:
             browser.close()
 
-    if file_path and drive_folder_id and result_data.get("success"):
-        print(f"[Tiger] Uploading {file_path.name} to S3 + Google Drive...")
+    if zip_path and result_data.get("success"):
         try:
-            s3_res = file_storage.upload(str(file_path), reference_no=reference_no)
-            result_data["s3"] = s3_res
-            result_data["s3_url"] = s3_res["url"]
-            print(f"[Tiger] S3 Uploaded: {s3_res['key']} — {s3_res['url']}")
+            s3_list = extract_and_upload(zip_path, reference_no)
         except Exception as e:
-            print(f"[Tiger] S3 upload failed: {e}")
-            result_data["s3"] = {}
-            result_data["s3_url"] = ""
-        drive_result = upload_to_drive(str(file_path), folder_id=drive_folder_id)
-        result_data["drive_url"] = drive_result.get("webViewLink", "")
-        result_data["drive"] = drive_result
-        print(f"[Tiger] Drive Uploaded: {drive_result['name']} — {result_data['drive_url']}")
+            print(f"[Tiger] Extract/upload failed: {e}")
+            s3_list = []
+        result_data["s3_list"] = s3_list
+        result_data["s3_urls"] = [x["url"] for x in s3_list]
+        result_data["s3"] = s3_list[0] if s3_list else {}
+        result_data["s3_url"] = result_data["s3_urls"][0] if result_data["s3_urls"] else ""
+        result_data["drive_url"] = ""
+        result_data["drive"] = {}
+        result_data["file_count"] = len(s3_list)
 
     return result_data
 
 
 def _search_by_reference(page, reference_no: str):
     print(f"[Tiger] Searching dashboard for reference {reference_no!r}...")
-
-    filter_btn = page.locator("#new-filter-btn-tt")
-    filter_btn.click()
-    page.wait_for_timeout(1000)
-
-    tid_input = page.locator("#txt_W_Tid")
-    tid_input.wait_for(state="visible", timeout=15000)
-    tid_input.fill(reference_no)
-
-    search_btn = page.locator("#new-filter-view-tt .filter-footer button")
-    search_btn.click()
-
-    loader = page.locator("#tender-loader")
-    try:
-        loader.wait_for(state="hidden", timeout=60000)
-    except Exception:
-        pass
+    print(f"[Tiger] Redirecting to homepage https://www.tendertiger.com/ ...")
+    page.goto("https://www.tendertiger.com/", wait_until="networkidle", timeout=30000)
     page.wait_for_timeout(2000)
-
+    print(f"[Tiger] Clicking Old Search link...")
+    # ponytail: 6 dupes — first was hidden, pull-right variants (nth 4/5) are desktop visible
+    candidates = page.locator("a.home-link.old-search:has-text('Old Search')")
+    clicked = False
+    for idx in [4, 5, 0, 1, 2, 3]:
+        if idx >= candidates.count():
+            continue
+        loc = candidates.nth(idx)
+        try:
+            if loc.is_visible():
+                print(f"[Tiger] Trying Old Search nth({idx})...")
+                loc.click()
+                page.wait_for_timeout(2000)
+                # verify search input appeared
+                if page.locator("input#txtadvanceSearchMain").is_visible():
+                    clicked = True
+                    break
+        except Exception:
+            continue
+    if not clicked:
+        # fallback: try pull-right specific then first
+        old_search = page.locator("a.home-link.pull-right.old-search:has-text('Old Search')").first
+        if old_search.count() > 0:
+            old_search.wait_for(state="visible", timeout=15000)
+            old_search.click()
+            page.wait_for_timeout(2000)
+        else:
+            old_search = page.locator("a.home-link.old-search:has-text('Old Search')").first
+            old_search.wait_for(state="visible", timeout=15000)
+            old_search.click()
+            page.wait_for_timeout(2000)
+    print(f"[Tiger] Filling reference in txtadvanceSearchMain: {reference_no}")
+    # ponytail: match multiple attrs to avoid ambiguity — id + name + placeholder
+    search_input = page.locator("input#txtadvanceSearchMain[name='txtadvanceSearchMain'][placeholder*='keyword']")
+    search_input.wait_for(state="visible", timeout=15000)
+    search_input.fill(reference_no)
+    page.wait_for_timeout(500)
+    print(f"[Tiger] Clicking Search button...")
+    # ponytail: id duped 2x — header FnSearchTender('header') vs main FnSearchTenders() — pick main
+    search_candidates = page.locator("a#advancesearchchk.search_btn.old-Search-btn:has-text('Search')")
+    search_clicked = False
+    for s_idx in [1, 0]:
+        if s_idx >= search_candidates.count():
+            continue
+        loc = search_candidates.nth(s_idx)
+        try:
+            if loc.is_visible():
+                onclick = loc.get_attribute("onclick") or ""
+                print(f"[Tiger] Trying Search nth({s_idx}) onclick={onclick!r}...")
+                loc.click()
+                search_clicked = True
+                break
+        except Exception:
+            continue
+    if not search_clicked:
+        # fallback specific — type=button + FnSearchTenders plural is main search
+        search_btn = page.locator("a#advancesearchchk[type='button'][onclick*='FnSearchTenders']:has-text('Search')").first
+        if search_btn.count() == 0:
+            search_btn = page.locator("a#advancesearchchk.search_btn.old-Search-btn:has-text('Search')").first
+        search_btn.wait_for(state="visible", timeout=15000)
+        search_btn.click()
+    else:
+        # already clicked via candidate loop
+        pass
+    page.wait_for_timeout(3000)
+    page.wait_for_load_state("networkidle", timeout=30000)
+    # ponytail: old filter logic commented out — no filter click, homepage redirect is new entry point
+    # filter_btn = page.locator("#new-filter-btn-tt")
+    # filter_btn.wait_for(state="visible", timeout=10000)
+    # if not filter_btn.is_visible():
+    #     print("[Tiger] Filter button not visible")
+    # else:
+    #     filter_btn.click()
+    #     page.wait_for_timeout(1000)
+    # tid_input = page.locator("#txt_W_Tid")
+    # if not tid_input.is_visible():
+    #     print("[Tiger] Tid input not visible, retrying filter...")
+    #     if filter_btn.count() > 0:
+    #         filter_btn.click()
+    #         page.wait_for_timeout(1000)
+    # tid_input.wait_for(state="visible", timeout=15000)
+    # print(f"[Tiger] Filling reference: {reference_no}")
+    # tid_input.fill(reference_no)
+    # page.wait_for_timeout(500)
+    # print("[Tiger] Clicking SEARCH...")
+    # search_btn = page.locator("#new-filter-view-tt .filter-footer button")
+    # search_btn.wait_for(state="visible", timeout=10000)
+    # search_btn.click()
+    # loader = page.locator("#tender-loader")
+    # try:
+    #     loader.wait_for(state="hidden", timeout=60000)
+    # except Exception:
+    #     pass
+    # page.wait_for_timeout(2000)
+    # return _open_matching_tender(page, reference_no)
     return _open_matching_tender(page, reference_no)
 
 
@@ -130,7 +216,28 @@ def _open_matching_tender(page, reference_no: str):
 def _download_docs(detail_page, reference_no: str) -> Path:
     print(f"[Tiger] Downloading all documents for {reference_no!r}...")
 
-    link = detail_page.locator(".all-doc-dow a[href*='GetTenderDocs']")
+    # ponytail: 2 variants — old GetTenderDocs vs new DownloadAllFiles btn-download-all-compact
+    selectors = [
+        "a.btn-download-all-compact:has-text('Download All')",
+        "a[onclick*='DownloadAllFiles']:has-text('Download All')",
+        ".all-doc-dow a[href*='GetTenderDocs']",
+        "a:has-text('Download All')",
+    ]
+    link = None
+    for sel in selectors:
+        cand = detail_page.locator(sel).first
+        try:
+            if cand.count() > 0 and cand.is_visible():
+                print(f"[Tiger] Found download button via {sel!r}")
+                link = cand
+                break
+        except Exception:
+            continue
+    if link is None:
+        # fallback strict wait on most likely
+        link = detail_page.locator("a.btn-download-all-compact:has-text('Download All')").first
+        if link.count() == 0:
+            link = detail_page.locator("a[onclick*='DownloadAllFiles']").first
     link.wait_for(state="visible", timeout=30000)
 
     download_dir = Path(settings.TENDER_PARSING_TEMP_DIR)

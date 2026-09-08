@@ -6,7 +6,7 @@ import pika
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
-from tender_search.queue import get_channel
+from tender_search.queue import get_channel, publish
 from tender_search.queue_types import (
     GemDownloadTask,
     NonGemDownloadTask,
@@ -18,6 +18,7 @@ from tender_search.services.tender_tiger import login_tiger
 from tender_search.models import TenderMerged, TenderFiles
 from tender_search.services.gem_pdf_downloader import download_gem_pdf
 from tender_search.services.gem_ra_pdf_downloader import download_ra_pdf
+from tender_search.constants import TENDER_FILE_TYPES
 logger = logging.getLogger(__name__)
 import asyncio
 
@@ -41,12 +42,7 @@ def callback(ch, method, properties, body):
             print("GEM_RESULT.....................", gem_result)
 
             if gem_result.get("success"):
-                ch.basic_publish(
-                    exchange="",
-                    routing_key=settings.TENDER_PARSING_QUEUE,
-                    body=json.dumps({"type": "GEM_PDF_PARSING", "referenceNo": payload.gemId}),
-                    properties=pika.BasicProperties(delivery_mode=2),
-                )
+                publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "GEM_PDF_PARSING", "referenceNo": payload.gemId})
                 logger.info("Published GEM parsing job for %s", payload.gemId)
             else:
                 logger.error("GEM_DOWNLOAD failed for %s: %s", payload.gemId, gem_result.get("error"))
@@ -59,12 +55,7 @@ def callback(ch, method, properties, body):
             if ra_result.get("success"):
                 # ponytail: prefer S3 URL (public bucket), fallback to Drive
                 s3_link = ra_result.get("s3Link") or ra_result.get("driveLink", "")
-                ch.basic_publish(
-                    exchange="",
-                    routing_key=settings.TENDER_PARSING_QUEUE,
-                    body=json.dumps({"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": s3_link}),
-                    properties=pika.BasicProperties(delivery_mode=2),
-                )
+                publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "RA_GEM_PDF_PARSING", "referenceNo": payload.referenceNo, "file_link": s3_link})
                 logger.info("Published RA GEM parsing job for %s", payload.referenceNo)
             else:
                 logger.error("RA_GEM_DOWNLOAD failed for %s: %s", payload.referenceNo, ra_result.get("error"))
@@ -82,76 +73,93 @@ def callback(ch, method, properties, body):
             result = login_tender247(email, password, reference_no, drive_folder_id)
 
             if result.get("success"):
-                # ponytail: public bucket URL, prefer S3, fallback Drive
-                s3 = result.get("s3", {})
-                drive = result.get("drive", {})
-                file_url = s3.get("url") or drive.get("webViewLink", "")
-                file_name = (s3.get("key") or drive.get("name", "")).split("/")[-1] if (s3.get("key") or drive.get("name")) else ""
-                extension = Path(file_name).suffix if file_name else ""
+                # ponytail: per-file S3 via zip_utils, s3_list contains individual docs
+                s3_list = result.get("s3_list") or ([result.get("s3")] if result.get("s3") else [])
+                if not s3_list:
+                    logger.warning("Tender247 success but no files for %s", reference_no)
                 tender_merged = TenderMerged.objects.filter(referenceno=reference_no).first()
+                print(f"[Tender247] tender_merged={'found' if tender_merged else 'NOT FOUND'} for {reference_no}, s3_list={len(s3_list)}")
+                logger.info("TenderMerged %s for %s", 'found' if tender_merged else 'NOT FOUND', reference_no)
                 if tender_merged:
-                    TenderFiles.objects.create(
-                        name=file_name,
-                        extension=extension,
-                        url=file_url,
-                        source="tender247",
-                        tags=["tenderDocument"],
-                        tendermergedid=tender_merged,
-                        createdat=timezone.now(),
-                        updatedat=timezone.now(),
-                    )
-                    ch.basic_publish(
-                        exchange="",
-                        routing_key=settings.TENDER_PARSING_QUEUE,
-                        body=json.dumps({
-                            "type": "NON_GEM_BOQ_PARSING",
-                            "referenceNo": reference_no,
-                            "file_link": file_url,
-                        }),
-                        properties=pika.BasicProperties(delivery_mode=2),
-                    )
-                    logger.info("Published NON_GEM_BOQ_PARSING job for %s", reference_no)
-                logger.info(f"[NON_GEM_DOWNLOAD] Result for {reference_no}: success={result.get('success')}")
+                    for s3 in s3_list:
+                        if not s3 or not s3.get("url"):
+                            continue
+                        file_url = s3.get("url", "")
+                        file_name = (s3.get("key") or "").split("/")[-1]
+                        extension = Path(file_name).suffix if file_name else ""
+                        # ponytail: BOQ excel → BOQ_FILE else tenderDocument — via constants
+                        is_boq_excel = "boq" in file_name.lower() and extension.lower() in (".xls", ".xlsx", ".xlsm", ".xlsb")
+                        print(f"[Tender247] file={file_name} ext={extension} is_boq_excel={is_boq_excel}")
+                        tags = [TENDER_FILE_TYPES["BOQ_FILE"]] if is_boq_excel else [TENDER_FILE_TYPES["TENDER_DOCUMENT"]]
+                        TenderFiles.objects.create(
+                            name=file_name,
+                            extension=extension,
+                            url=file_url,
+                            source="tender247",
+                            tags=tags,
+                            tendermergedid=tender_merged,
+                            createdat=timezone.now(),
+                            updatedat=timezone.now(),
+                        )
+                        if is_boq_excel:
+                            print(f"[Tender247] Publishing BOQ file {file_name} to {settings.TENDER_PARSING_QUEUE}")
+                            publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "NON_GEM_BOQ_PARSING", "referenceNo": reference_no, "file_link": file_url})
+                            logger.info("Published NON_GEM_BOQ_PARSING for %s file %s", reference_no, file_name)
+                        else:
+                            logger.info("Skipped BOQ parsing for non-BOQ file %s", file_name)
+                else:
+                    logger.warning("TenderMerged NOT FOUND for %s — skipping TenderFiles + publish", reference_no)
+                    print(f"[Tender247] TenderMerged NOT FOUND for {reference_no} — skipping publish")
+                logger.info(f"[NON_GEM_DOWNLOAD] Result for {reference_no}: files={len(s3_list)} success={result.get('success')}")
             else:
                 tiger_email = settings.TENDER_TIGER_EMAIL
                 tiger_password = settings.TENDER_TIGER_PASSWORD
                 tiger_result = login_tiger(tiger_email, tiger_password, reference_no, drive_folder_id)
                 if tiger_result.get("success"):
-                                s3 = tiger_result.get("s3", {})
-                                drive = tiger_result.get("drive", {})
-                                file_url = s3.get("url") or drive.get("webViewLink", "")
-                                file_name = (s3.get("key") or drive.get("name", "")).split("/")[-1] if (s3.get("key") or drive.get("name")) else ""
-                                extension = Path(file_name).suffix if file_name else ""
+                                # ponytail: recursive zip extract — s3_list contains individual files, no zip
+                                s3_list = tiger_result.get("s3_list") or ([tiger_result.get("s3")] if tiger_result.get("s3") else [])
+                                if not s3_list:
+                                    logger.warning("Tiger success but no files extracted for %s", reference_no)
                                 tender_merged = TenderMerged.objects.filter(referenceno=reference_no).first()
+                                print(f"[Tiger] tender_merged={'found' if tender_merged else 'NOT FOUND'} for {reference_no}, s3_list={len(s3_list)}")
+                                logger.info("TenderMerged %s for %s", 'found' if tender_merged else 'NOT FOUND', reference_no)
                                 if tender_merged:
-                                    TenderFiles.objects.create(
-                                        name=file_name,
-                                        extension=extension,
-                                        url=file_url,
-                                        source="tendertiger",
-                                        tags=["tenderDocument"],
-                                        tendermergedid=tender_merged,
-                                        createdat=timezone.now(),
-                                        updatedat=timezone.now(),
-                                    )
-                                    ch.basic_publish(
-                                        exchange="",
-                                        routing_key=settings.TENDER_PARSING_QUEUE,
-                                        body=json.dumps({
-                                            "type": "NON_GEM_BOQ_PARSING",
-                                            "referenceNo": reference_no,
-                                            "file_link": file_url,
-                                        }),
-                                        properties=pika.BasicProperties(delivery_mode=2),
-                                    )
-                                    logger.info("Published NON_GEM_BOQ_PARSING job for %s", reference_no)
-                                logger.info(f"[NON_GEM_DOWNLOAD] Result for {reference_no}: success={tiger_result.get('success')}")
+                                    for s3 in s3_list:
+                                        if not s3 or not s3.get("url"):
+                                            continue
+                                        file_url = s3.get("url", "")
+                                        file_name = (s3.get("key") or "").split("/")[-1]
+                                        extension = Path(file_name).suffix if file_name else ""
+                                        # ponytail: BOQ excel → BOQ_FILE else tenderDocument — via constants
+                                        is_boq_excel = "boq" in file_name.lower() and extension.lower() in (".xls", ".xlsx", ".xlsm", ".xlsb")
+                                        print(f"[Tiger] file={file_name} ext={extension} is_boq_excel={is_boq_excel}")
+                                        tags = [TENDER_FILE_TYPES["BOQ_FILE"]] if is_boq_excel else [TENDER_FILE_TYPES["TENDER_DOCUMENT"]]
+                                        TenderFiles.objects.create(
+                                            name=file_name,
+                                            extension=extension,
+                                            url=file_url,
+                                            source="tendertiger",
+                                            tags=tags,
+                                            tendermergedid=tender_merged,
+                                            createdat=timezone.now(),
+                                            updatedat=timezone.now(),
+                                        )
+                                        if is_boq_excel:
+                                            print(f"[Tiger] Publishing BOQ file {file_name} to {settings.TENDER_PARSING_QUEUE}")
+                                            publish(ch, settings.TENDER_PARSING_QUEUE, {"type": "NON_GEM_BOQ_PARSING", "referenceNo": reference_no, "file_link": file_url})
+                                            logger.info("Published NON_GEM_BOQ_PARSING for %s file %s", reference_no, file_name)
+                                        else:
+                                            logger.info("Skipped BOQ parsing for non-BOQ file %s", file_name)
+                                else:
+                                    logger.warning("TenderMerged NOT FOUND for %s — skipping TenderFiles + publish", reference_no)
+                                    print(f"[Tiger] TenderMerged NOT FOUND for {reference_no} — skipping publish")
+                                logger.info(f"[NON_GEM_DOWNLOAD] Tiger success for {reference_no}: files={len(s3_list)} success={tiger_result.get('success')}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
         else:
             logger.warning("Unknown message type: %s", payload.type)
             ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
-        logger.error("Failed to process message: %s", e)
+        logger.exception("Failed to process message: %s", e)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 

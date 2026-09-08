@@ -1,3 +1,4 @@
+from django.conf import settings
 from playwright.sync_api import sync_playwright
 
 from .browser import detect_chrome_path
@@ -11,7 +12,7 @@ def search_tender(website: str, reference_no: str) -> dict:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             executable_path=chrome_path,
-            headless=False,
+            headless=settings.HEADLESS_BROWSER,
         )
         page = browser.new_page()
 

@@ -4,6 +4,7 @@ import time
 from typing import Callable, Optional
 from urllib.parse import urljoin
 
+from django.conf import settings
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PwTimeoutError
 
 
@@ -580,7 +581,7 @@ def extract_bid_results(
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             executable_path=chrome_path,
-            headless=False,
+            headless=settings.HEADLESS_BROWSER,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-features=ChromeWhatsNewUI",

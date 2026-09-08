@@ -168,7 +168,7 @@ def callback(ch, method, properties, body):
             ch.basic_ack(delivery_tag=method.delivery_tag)
         elif payload.type == "NON_GEM_BOQ_PARSING":
             print("linkkkk.......",payload.file_link)
-            boq_parse= process_boq(reference_no=payload.referenceNo, drive_link = payload.file_link)
+            boq_parse= process_boq(reference_no=payload.referenceNo, file_link=payload.file_link)
             logger.info("SUCCESS: BOQ attachment parsed for %s", payload.referenceNo)
             print( "..........Parsed  BOQ excel...........",)
             print(f"[tender:parsing] BOQSUCCESS: {boq_parse}")

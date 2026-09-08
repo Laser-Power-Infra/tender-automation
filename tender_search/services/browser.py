@@ -1,6 +1,7 @@
 import os
 import time
 
+from django.conf import settings
 from playwright.sync_api import sync_playwright
 
 
@@ -59,7 +60,9 @@ def detect_chrome_path() -> str:
 
 
 
-def create_browser(headless: bool = False):
+def create_browser(headless: bool | None = None):
+    if headless is None:
+        headless = settings.HEADLESS_BROWSER
     chrome_path = os.environ.get("CHROME_PATH") or detect_chrome_path()
     pw = sync_playwright().start()
     browser = pw.chromium.launch(executable_path=chrome_path, headless=headless)
