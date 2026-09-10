@@ -34,10 +34,32 @@ def login_tender247(email: str, password: str, tender_id: str = "", drive_folder
             print(f"[Tender247] Navigating to homepage...")
             page.goto("https://www.tender247.com/auth/tender", timeout=50000)
 
-            page.locator("button:has-text('Sign Up')").click()
+            # ponytail: redirect landing shows Log in gradient button, email not yet visible
+            try:
+                page.locator("input[name='emailId']").first.wait_for(state="visible", timeout=3000)
+            except Exception:
+                login_btn = page.get_by_role("button", name="Log in")
+                if login_btn.count() == 0:
+                    login_btn = page.locator("button:has-text('Log in')")
+                if login_btn.count() > 0:
+                    try:
+                        if login_btn.first.is_visible():
+                            print("[Tender247] Clicking Log in...")
+                            login_btn.first.click()
+                            page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
 
-            page.wait_for_timeout(2000)
+            signup_btn = page.locator("button:has-text('Sign Up')")
+            if signup_btn.count() > 0:
+                try:
+                    if signup_btn.first.is_visible():
+                        signup_btn.first.click()
+                        page.wait_for_timeout(1000)
+                except Exception:
+                    pass
 
+            page.locator("input[name='emailId']").first.wait_for(state="visible", timeout=10000)
             page.locator("input[name='emailId']").first.fill(email)
             page.locator("input[name='password']").first.fill(password)
 
