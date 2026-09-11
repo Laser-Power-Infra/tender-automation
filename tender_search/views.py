@@ -5,7 +5,6 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .services.nic_tender import search_tender
 from .services.gem_bid_results import extract_bid_results
 from .services.worker_supervisor import (
     WORKER_COMMANDS,
@@ -16,19 +15,6 @@ from .services.worker_supervisor import (
     status_all,
     stop,
 )
-
-
-@api_view(["POST"])
-def search_tender_view(request):
-    website = request.data.get("website")
-    reference_no = request.data.get("reference_no")
-    if not website or not reference_no:
-        return Response(
-            {"error": "website and reference_no are required"},
-            status=400,
-        )
-    result = search_tender(website, reference_no)
-    return Response(result)
 
 
 @api_view(["POST"])
