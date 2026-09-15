@@ -14,12 +14,19 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
+    "daphne",
     "corsheaders",
     "django.contrib.contenttypes",
     "django.contrib.postgres",
     "rest_framework",
     "tender_search",
 ]
+
+# ponytail: externally managed DB — no auth tables, disable auth migrations permanently
+MIGRATION_MODULES = {"auth": None}
+SILENCED_SYSTEM_CHECKS = ["auth.W004"]
+
+ASGI_APPLICATION = "config.asgi.application"
 
 TEMPLATES = [
     {
@@ -97,3 +104,10 @@ USE_TZ = False
 CHROME_PATH= os.getenv("CHROME_PATH")
 
 HEADLESS_BROWSER = os.getenv("HEADLESS_BROWSER", "true").lower() not in ("false", "0", "no", "off")
+
+REST_FRAMEWORK = {
+    "UNAUTHENTICATED_USER": None,
+    "UNAUTHENTICATED_TOKEN": None,
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+}

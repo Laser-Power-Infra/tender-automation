@@ -44,6 +44,53 @@ services:
     networks:
       - infra
 
+  automation-api-server:
+    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION:-latest}
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    environment:
+      CHROME_PATH: /usr/bin/chromium
+    ports:
+      - "4120:8000"
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    networks:
+      - infra
+
+  kestra-automation:
+    build:
+      context: ./kestra
+      dockerfile: Dockerfile
+    container_name: kestra-ted
+    restart: unless-stopped
+
+    ports:
+      - "4121:8080"
+
+    user: root
+
+    environment:
+      SECRET_KESTRA_EXTERNAL_API_KEY: ${KESTRA_EXTERNAL_API_KEY}
+
+      KESTRA_CONFIGURATION: |
+        micronaut:
+          io:
+            watch:
+              enabled: true
+              paths:
+                - /flows
+
+    volumes:
+      - ./kestra/flows:/flows
+      - ./kestra/storage:/app/storage
+      - ./kestra/data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+
+    command: server local
+
+    networks:
+      - infra
 
 volumes:
   condutor:

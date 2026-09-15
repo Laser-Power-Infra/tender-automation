@@ -1,0 +1,19 @@
+id: sync_result
+namespace: scheduler
+
+triggers:
+  - id: hourly
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 * * * *"
+
+tasks:
+  - id: call_sync_result
+    type: io.kestra.plugin.core.http.Request
+    uri: "http://automation-api-server:8000/api/v1/sync-result/"
+    method: POST
+    contentType: application/json
+    body:
+      type: both
+    headers:
+      Authorization: "Bearer {{ secret('KESTRA_EXTERNAL_API_KEY') }}"
+      x-api-key: "{{ secret('KESTRA_EXTERNAL_API_KEY') }}"

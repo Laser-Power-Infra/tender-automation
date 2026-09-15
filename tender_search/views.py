@@ -7,6 +7,8 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .services.nic_tender import search_tender
 from .services.gem_bid_results import extract_bid_results
+from .services.tender247_result import get_tender247_result
+from .services.tender_tiger_result import get_tender_tiger_result
 from .services.worker_supervisor import (
     WORKER_COMMANDS,
     clear_logs,
@@ -88,3 +90,45 @@ def dashboard_logs_view(request):
 def dashboard_clear_logs_view(request):
     clear_logs()
     return JsonResponse({"ok": True})
+
+
+@api_view(["POST"])
+def sync_result_view(request):
+    # ponytail: sequential both default — avoids Proactor loop clash
+    raw = request.data.get("type")
+    if raw is None:
+        raw = request.data.get("types")
+    if raw is None:
+        raw = request.data.get("source")
+    types: set[str] = set()
+    if raw is None or raw == "" or raw == "both":
+        types = {"tiger", "t247"}
+    elif isinstance(raw, list):
+        for v in raw:
+            v = str(v).lower().strip()
+            if v in ("tiger", "t247", "247", "tender247"):
+                types.add("t247" if v in ("247", "tender247") else v)
+            elif v == "both":
+                types = {"tiger", "t247"}
+                break
+    else:
+        v = str(raw).lower().strip()
+        if v in ("tiger", "t247", "247", "tender247"):
+            types.add("t247" if v in ("247", "tender247") else v)
+        elif v == "both":
+            types = {"tiger", "t247"}
+        else:
+            types = {"tiger", "t247"}
+    if not types:
+        types = {"tiger", "t247"}
+
+    result: dict = {}
+    if "tiger" in types:
+        result["tiger"] = get_tender_tiger_result()
+    if "t247" in types:
+        result["t247"] = get_tender247_result()
+    # single type → unwrap for backward compat, both → combined
+    if len(types) == 1:
+        sole = next(iter(types))
+        return Response(result[sole])
+    return Response(result)
