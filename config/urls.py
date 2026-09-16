@@ -4,11 +4,8 @@ from tender_search.views import (
     dashboard_home,
     dashboard_logs_view,
     gem_bid_results_view,
-<<<<<<< HEAD
-    search_tender_view,
+    # search_tender_view,
     sync_result_view,
-=======
->>>>>>> 6f771f683b6d6658d06eb78b0dea8c913fd9f33d
     worker_status_view,
     worker_toggle_view,
 )
