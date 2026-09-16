@@ -49,7 +49,7 @@ def _click_tenders_download(page) -> Path:
     loc.first.wait_for(state="visible", timeout=15000)
     loc.first.scroll_into_view_if_needed(timeout=5000)
     print(f"[TigerResult] Clicking span.icon-label.arrow-none")
-    with page.expect_download(timeout=30000) as dl:
+    with page.expect_download(timeout=60000) as dl:
         try:
             loc.first.click(force=True)
         except Exception:
