@@ -73,7 +73,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          docker compose pull automation-worker parsing-worker
+          docker compose pull
 
           docker compose up -d --scale automation-worker=2 --scale parsing-worker=3
 
