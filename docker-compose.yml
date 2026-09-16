@@ -44,9 +44,10 @@ services:
     networks:
       - infra
 
-  automation-api-server:
+  api-server:
     image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION:-latest}
     command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    
     environment:
       CHROME_PATH: /usr/bin/chromium
     ports:
@@ -61,7 +62,7 @@ services:
     build:
       context: ./kestra
       dockerfile: Dockerfile
-    container_name: kestra-ted
+    container_name: kestra-automation
     restart: unless-stopped
 
     ports:
