@@ -399,10 +399,11 @@ def _parse_table(ws, header_row_num, end_row):
             hdr = str(header_cells[i].value).strip() if header_cells[i].value else ""
             if not hdr or _is_non_material_header(hdr.lower()):
                 continue
+            # keep every column carrying this header name: duplicates must all be checked
+            rate_columns.setdefault(hdr, []).append(cell.column)
             num = _to_number(cell.value)
             if num is not None and abs(num) > 0:
                 material_rates[hdr] = num
-                rate_columns[hdr] = cell.column
 
     rows = []
     table_base_date = None
@@ -488,10 +489,12 @@ def _parse_table(ws, header_row_num, end_row):
             "cva": cva_str,
         })
 
-        for hdr, col in rate_columns.items():
-            mval = _to_number(_cell(row_obj, col))
-            if mval is not None and abs(mval) > 0:
-                used_materials.add(hdr)
+        for hdr, cols in rate_columns.items():
+            for col in cols:
+                mval = _to_number(_cell(row_obj, col))
+                if mval is not None and abs(mval) > 0:
+                    used_materials.add(hdr)
+                    break
 
     if not rows:
         return None
