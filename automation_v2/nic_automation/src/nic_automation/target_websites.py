@@ -1,4 +1,6 @@
-website=["https://etender.up.nic.in"]
+website=[
+# "https://etender.up.nic.in",
+         "https://wbtenders.gov.in"]
 
 CATEGORY_CONFIG = {
     "EPC": {

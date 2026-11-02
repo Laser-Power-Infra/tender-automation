@@ -3,13 +3,22 @@ import json
 import os
 import re
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 from nic_automation.captcha_decoder import fix_case, save_captcha, solve_candidates
 from nic_automation.target_websites import CATEGORY_CONFIG, EXCLUSION_KEYWORDS, website
+
+
+_ctx = ""  # "[wbtenders.gov.in] [12/150 EPC/Distribution 'PSS']", set per keyword so every line says where it is
+
+
+def log(msg: str) -> None:
+    print(f"{datetime.now():%H:%M:%S} {_ctx} {msg}".replace("  ", " "), flush=True)
 
 
 def is_excluded(text: str) -> bool:
@@ -82,13 +91,13 @@ def _auto_captcha(tab, tender_id, tries=CAPTCHA_TRIES):
         image, src = _captcha_image(tab)
         text = next((t for t in solve_candidates(image) if len(t) == 6), None)
         if text is None:
-            print(f"[{tender_id}] captcha: unreadable, refreshing")
+            log(f"[{tender_id}] captcha: unreadable, refreshing")
             _refresh_captcha(tab, src)
             continue
         text = str(fix_case(text, image))
         save_captcha(image, CAPTCHA_DIR / f"{tender_id}_{submitted + 1}_{re.sub(r'[^A-Za-z0-9]', '', text)}.png")
         submitted += 1
-        print(f"[{tender_id}] captcha attempt {submitted}: {text}")
+        log(f"[{tender_id}] captcha attempt {submitted}/{tries}: {text}")
         tab.fill(CAPTCHA_TEXT, text)
         tab.click(CAPTCHA_SUBMIT)
         tab.wait_for_load_state()
@@ -105,12 +114,12 @@ def download_zip(tab, tender_id):
     try:
         link.wait_for(timeout=15_000)
     except PlaywrightTimeoutError:
-        print(f"WARNING [{tender_id}] no zip link on the page")
+        log(f"WARNING [{tender_id}] no zip link on the page")
         return None
     if "sp=" not in (link.get_attribute("href") or ""):
         link.click()
         if not _auto_captcha(tab, tender_id):
-            print(f"WARNING [{tender_id}] captcha not solved, zip skipped")
+            log(f"WARNING [{tender_id}] captcha not solved, sent without documents")
             return None
     link = tab.locator(f'{ZIP_LINK}[href*="sp="]').first
     with tab.expect_download() as dl:
@@ -118,6 +127,7 @@ def download_zip(tab, tender_id):
     DOWNLOAD_DIR.mkdir(exist_ok=True)
     path = DOWNLOAD_DIR / f"{tender_id}.zip"
     dl.value.save_as(path)
+    log(f"[{tender_id}] zip downloaded")
     return str(path)
 
 
@@ -146,8 +156,9 @@ def tender_details(context, href, tender_id):
         details["Tenders Documents"] = docs
         missing = [k for k in REQUIRED if not details.get(k)]
         if missing:
-            print(f"WARNING {href}: missing {missing}")
+            log(f"WARNING [{tender_id}] page missing {missing}")
         if is_excluded(details.get("Work Description", "")):
+            log(f"[{tender_id}] excluded (Work Description matches exclusion list)")
             return None
         details["zip_path"] = download_zip(tab, details.get("Tender ID") or tender_id)
         return details
@@ -163,7 +174,8 @@ def _use_v2_lib():
 
 def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False) -> list[dict]:
     """One item per (portal, keyword) searched: {portal, category, sub_category, keyword, tenders, error}.
-    A tender whose document captcha failed is still in `tenders`; its documents just have url None."""
+    A tender whose document captcha failed is still in `tenders`; its "Tenders Documents" is just empty
+    (that list only holds files from the downloaded zip, each with its S3 url)."""
     _use_v2_lib()
     from automation_v2.lib.zip_utils import extract_and_upload
     seen = set()
@@ -172,39 +184,53 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
     keywords = [(category, sub, keyword) for category, subs in CATEGORY_CONFIG.items()
                 for sub, cfg in subs.items() for keyword in cfg["keywords"]
                 if not only_keyword or keyword.lower() == only_keyword.lower()]
+    global _ctx
+    started = time.monotonic()
+    _ctx = ""
+    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s)")
     chrome = os.environ.get("CHROME_PATH")  # the Docker image ships /usr/bin/chromium, not Playwright's build
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless,
                                     executable_path=chrome if chrome and os.path.exists(chrome) else None)
         context = browser.new_context()
         page = context.new_page()
-        for portal in portals:
+        for pi, portal in enumerate(portals, 1):
+            host = urlparse(portal).netloc
+            _ctx = f"[{host}]"
             portal_items = [{"portal": portal, "category": c, "sub_category": s, "keyword": k,
                              "tenders": [], "error": None} for c, s, k in keywords]
             items += portal_items
+            log(f"portal {pi}/{len(portals)} {portal}")
             try:  # one check per portal, so a dead portal doesn't cost a timeout per keyword
                 page.goto(portal)
                 page.wait_for_selector("#SearchDescription", timeout=30_000)
             except Exception as e:
-                print(f"WARNING [{portal}] skipped: {e}")
+                log(f"ERROR portal skipped: {type(e).__name__}: {str(e).splitlines()[0]}")
                 for item in portal_items:
                     item["error"] = f"portal unreachable / not a NIC search page: {type(e).__name__}"
                 continue
-            for item in portal_items:
+            for ki, item in enumerate(portal_items, 1):
                 keyword = item["keyword"]
+                _ctx = f"[{host}] [{ki}/{len(portal_items)} {item['category']}/{item['sub_category']} '{keyword}']"
                 try:
+                    log("searching...")
                     page.goto(portal)
                     page.fill("#SearchDescription", keyword)
                     page.press("#SearchDescription", "Enter")
                     page.wait_for_load_state()
                     if page.locator("#table").count() == 0:
-                        item["error"] = "no result table (search captcha?)"
-                        print(f"WARNING [{portal}] [{keyword}] {item['error']}")
+                        if page.get_by_text("No Tenders found").count():
+                            log("done: 0 tenders (No Tenders found)")
+                        else:
+                            item["error"] = "no result table and no 'No Tenders found' message (search captcha?)"
+                            log(f"ERROR {item['error']}")
                         continue
-                    for row in parse_results(page):
-                        if row["id"] in seen:
-                            continue
+                    rows = parse_results(page)
+                    new = [r for r in rows if r["id"] not in seen]
+                    log(f"{len(rows)} result rows ({len(new)} new, {len(rows) - len(new)} already seen)")
+                    for ti, row in enumerate(new, 1):
                         seen.add(row["id"])
+                        log(f"tender {ti}/{len(new)} {row['id']}: opening")
                         details = tender_details(context, row["href"], row["id"])
                         if details is None:
                             continue
@@ -212,37 +238,50 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                                   "keyword": keyword, "href": row["href"], "id": row["id"], **details}
                         results.append(tender)
                         item["tenders"].append(tender)
+                    log(f"done: {len(item['tenders'])} tenders")
                 except Exception as e:  # keep tenders already collected; move on to the next keyword
-                    item["error"] = f"{type(e).__name__}: {e}"
-                    print(f"WARNING [{portal}] [{keyword}] {item['error']}")
+                    item["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
+                    log(f"ERROR {item['error']} ({len(item['tenders'])} tenders kept)")
+        _ctx = ""
         failed = [r for r in results if not r["zip_path"]]
         # once one captcha passed the session carries sp=, so skipped zips download without a captcha now
         if failed and any(r["zip_path"] for r in results):
-            print(f"retrying {len(failed)} tenders whose captcha failed...")
+            log(f"retrying {len(failed)} tenders whose captcha failed")
             for result in failed:
+                _ctx = f"[retry '{result['keyword']}']"
                 try:
                     details = tender_details(context, result["href"], result.get("Tender ID") or result["id"])
                 except Exception as e:
-                    print(f"WARNING [{result['id']}] retry failed: {e}")
+                    log(f"WARNING [{result['id']}] retry failed: {e}")
                     continue
                 if details:
                     result["zip_path"] = details["zip_path"]
+                log(f"[{result['id']}] {'retry ok' if result['zip_path'] else 'still no zip'}")
         for result in results:
             reference_no = result.get("Tender ID") or result["id"]
+            _ctx = f"[upload '{result['keyword']}']"
             result["reference_no"] = reference_no
             zip_path = result.pop("zip_path")
             s3_list = []
             if zip_path:
+                log(f"[{reference_no}] uploading zip")
                 try:
                     s3_list = extract_and_upload(zip_path, reference_no)
                 except Exception as e:
-                    print(f"[{reference_no}] extract/upload failed: {e}")
+                    log(f"ERROR [{reference_no}] extract/upload failed: {e}")
             urls = {x["key"].rsplit("/", 1)[-1]: x["url"] for x in s3_list}  # file name -> link
             for doc in result["Tenders Documents"]:
-                doc["url"] = urls.get(doc["name"])  # None when the file wasn't in the zip (e.g. the NIT)
+                doc["url"] = urls.get(doc["name"])
+            # only documents that came from the zip and are on S3; the rest (e.g. the NIT) are dropped
+            result["Tenders Documents"] = [d for d in result["Tenders Documents"] if d["url"]]
             result.pop("href", None)
             result.pop("id", None)
         browser.close()
+    _ctx = ""
+    bad = sum(1 for i in items if i["error"])
+    with_docs = sum(1 for r in results if any(d["url"] for d in r["Tenders Documents"]))
+    log(f"scrape done in {(time.monotonic() - started) / 60:.1f}m: {len(items)} keyword searches "
+        f"({len(items) - bad} ok, {bad} failed), {len(results)} tenders ({with_docs} with documents)")
     return items
 
 

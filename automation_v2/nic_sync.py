@@ -10,7 +10,7 @@ from django.conf import settings
 from . import dispatch
 
 sys.path.insert(0, str(Path(__file__).parent / "nic_automation" / "src"))
-from nic_automation.scraper import scrape  # noqa: E402
+from nic_automation.src.nic_automation.scraper import scrape  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -30,3 +30,6 @@ def run(client_id: str, portals: list[str]) -> None:
                 outcome.fail(it["error"], it["tenders"])
             else:
                 outcome.succeed(it["tenders"])
+        logger.info("sent tender.synced_%s portal=%s keyword=%r tenders=%d%s",
+                    "failed" if it["error"] else "success", it["portal"], it["keyword"], len(it["tenders"]),
+                    f" error={it['error']}" if it["error"] else "")
