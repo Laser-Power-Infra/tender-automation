@@ -27,5 +27,11 @@ class CostingParseJob(BaseModel):
     decrypted_fileId: str | None = None
 
 
+class SyncJob(BaseModel):
+    """NIC scrape job from V2_SYNC_QUEUE: {"client_id": ..., "portals": ["https://etender.up.nic.in", ...]}."""
+    portals: list[Annotated[str, Field(pattern=r"^https?://")]] = Field(min_length=1)
+
+
 fetch_adapter = TypeAdapter(FetchJob)
+sync_adapter = TypeAdapter(SyncJob)
 parse_adapter = TypeAdapter(Annotated[Union[FileParseJob, CostingParseJob], Field(discriminator="type")])

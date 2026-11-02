@@ -11,4 +11,6 @@ WEBHOOK_EVENTS: dict[str, str] = {
     "file.parsed_failed": "Tender file could not be parsed",
     "result.synced_success": "Tender results scraped from TenderTiger / Tender247",
     "result.synced_failed": "Tender results could not be scraped",
+    "tender.synced_success": "NIC portal tenders scraped for one keyword (data.result = tender array)",
+    "tender.synced_failed": "NIC portal keyword could not be scraped",
 }

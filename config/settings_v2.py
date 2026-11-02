@@ -16,3 +16,4 @@ ROOT_URLCONF = "automation_v2.urls"
 
 V2_TASKS_QUEUE = os.getenv("V2_TASKS_QUEUE", "automation-v2:tasks")
 V2_PARSING_QUEUE = os.getenv("V2_PARSING_QUEUE", "automation-v2:parsing")
+V2_SYNC_QUEUE = os.getenv("V2_SYNC_QUEUE", "automation-v2:sync")

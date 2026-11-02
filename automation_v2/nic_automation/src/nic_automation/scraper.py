@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import re
 import sys
@@ -43,7 +44,7 @@ REQUIRED = ["Tender ID", "Work Description", "EMD Amount in ₹"]
 
 
 ZIP_LINK = 'a:has-text("Download as zip file")'
-DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 CAPTCHA_TEXT = "#captchaText"
 CAPTCHA_IMG = "#captchaImage"
 CAPTCHA_REFRESH = "#captcha"
@@ -154,46 +155,52 @@ def tender_details(context, href, tender_id):
         tab.close()
 
 
-def _django_extract_and_upload():
-    """automation_v2.lib's S3 helpers read django.conf.settings (lazy, no django.setup()/apps/DB needed)."""
+def _use_v2_lib():
+    """automation_v2.lib helpers read django.conf.settings (lazy, no django.setup()/apps/DB needed)."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+
+
+def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False) -> list[dict]:
+    """One item per (portal, keyword) searched: {portal, category, sub_category, keyword, tenders, error}.
+    A tender whose document captcha failed is still in `tenders`; its documents just have url None."""
+    _use_v2_lib()
     from automation_v2.lib.zip_utils import extract_and_upload
-    return extract_and_upload
-
-
-def run(only_keyword: str | None = None) -> None:
-    only_keyword = only_keyword or (sys.argv[1] if len(sys.argv) > 1 else None)
-    sys.stdout.reconfigure(errors="replace")  # page fields contain ₹, which crashes a cp1252 console
     seen = set()
+    items = []
     results = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=headless)
         context = browser.new_context()
         page = context.new_page()
-        for category, subs in CATEGORY_CONFIG.items():
-            for sub, cfg in subs.items():
-                for keyword in cfg["keywords"]:
-                    if only_keyword and keyword != only_keyword:
-                        continue
-                    page.goto(website[0])
-                    page.fill("#SearchDescription", keyword)
-                    page.press("#SearchDescription", "Enter")
-                    page.wait_for_load_state()
-                    if page.locator("#table").count() == 0:
-                        input(f"[{keyword}] no result table; solve captcha in the browser if shown, then press Enter...")
+        for portal in portals:
+            for category, subs in CATEGORY_CONFIG.items():
+                for sub, cfg in subs.items():
+                    for keyword in cfg["keywords"]:
+                        if only_keyword and keyword.lower() != only_keyword.lower():
+                            continue
+                        item = {"portal": portal, "category": category, "sub_category": sub,
+                                "keyword": keyword, "tenders": [], "error": None}
+                        items.append(item)
+                        page.goto(portal)
+                        page.fill("#SearchDescription", keyword)
+                        page.press("#SearchDescription", "Enter")
                         page.wait_for_load_state()
-                    if page.locator("#table").count() == 0:
-                        continue
-                    for row in parse_results(page):
-                        if row["id"] in seen:
+                        if page.locator("#table").count() == 0:
+                            item["error"] = "no result table (search captcha?)"
+                            print(f"WARNING [{portal}] [{keyword}] {item['error']}")
                             continue
-                        seen.add(row["id"])
-                        details = tender_details(context, row["href"], row["id"])
-                        if details is None:
-                            continue
-                        results.append({"category": category, "sub_category": sub, "keyword": keyword,
-                                        "href": row["href"], "id": row["id"], **details})
+                        for row in parse_results(page):
+                            if row["id"] in seen:
+                                continue
+                            seen.add(row["id"])
+                            details = tender_details(context, row["href"], row["id"])
+                            if details is None:
+                                continue
+                            tender = {"category": category, "sub_category": sub, "keyword": keyword,
+                                      "href": row["href"], "id": row["id"], **details}
+                            results.append(tender)
+                            item["tenders"].append(tender)
         failed = [r for r in results if not r["zip_path"]]
         # once one captcha passed the session carries sp=, so skipped zips download without a captcha now
         if failed and any(r["zip_path"] for r in results):
@@ -202,19 +209,29 @@ def run(only_keyword: str | None = None) -> None:
                 details = tender_details(context, result["href"], result.get("Tender ID") or result["id"])
                 if details:
                     result["zip_path"] = details["zip_path"]
-        extract_and_upload = _django_extract_and_upload()
         for result in results:
             reference_no = result.get("Tender ID") or result["id"]
             result["reference_no"] = reference_no
             zip_path = result.pop("zip_path")
-            result["s3_list"] = []
+            s3_list = []
             if zip_path:
                 try:
-                    result["s3_list"] = extract_and_upload(zip_path, reference_no)
+                    s3_list = extract_and_upload(zip_path, reference_no)
                 except Exception as e:
                     print(f"[{reference_no}] extract/upload failed: {e}")
-            result["s3_urls"] = [x["url"] for x in result["s3_list"]]
+            urls = {x["key"].rsplit("/", 1)[-1]: x["url"] for x in s3_list}  # file name -> link
+            for doc in result["Tenders Documents"]:
+                doc["url"] = urls.get(doc["name"])  # None when the file wasn't in the zip (e.g. the NIT)
             result.pop("href", None)
             result.pop("id", None)
-            print(result)
         browser.close()
+    return items
+
+
+def run(only_keyword: str | None = None) -> None:
+    """Manual run: `python -m nic_automation [keyword]` prints one array per keyword."""
+    only_keyword = only_keyword or (sys.argv[1] if len(sys.argv) > 1 else None)
+    sys.stdout.reconfigure(errors="replace")  # page fields contain ₹, which crashes a cp1252 console
+    for item in scrape(website, only_keyword):
+        if item["tenders"]:
+            print(json.dumps(item["tenders"], ensure_ascii=False, indent=2))

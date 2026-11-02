@@ -18,6 +18,7 @@ dependencies = [
     "colorama==0.4.6",
     "cryptography==49.0.0",
     "daphne>=4.2.3",
+    "ddddocr>=1.6.1",
     "distro==1.9.0",
     "dj-database-url==3.1.2",
     "django==6.0.7",
