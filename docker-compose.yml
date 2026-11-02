@@ -1,5 +1,5 @@
 services:
-  # Running: automation-v2-api, automation-v2-tasks (x2), automation-v2-parsing. Others disabled.
+  # Running: automation-v2-api, automation-v2-tasks (x2), automation-v2-parsing, automation-v2-sync. Others disabled.
 
   # automation-worker:
   #   # build:
@@ -86,6 +86,17 @@ services:
       - costing:/mnt/costing
       - ./credentials.json:/app/credentials:ro
       - ./token.json:/app/token:rw
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    networks:
+      - infra
+
+  automation-v2-sync:
+    image: ghcr.io/laser-power-infra/django-worker:${APP_VERSION:-latest}
+    command: python manage.py consume_tender_sync_v2
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings_v2
     restart: unless-stopped
     env_file:
       - .env.production

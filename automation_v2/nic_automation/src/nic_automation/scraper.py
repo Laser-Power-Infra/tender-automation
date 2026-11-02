@@ -169,44 +169,62 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
     seen = set()
     items = []
     results = []
+    keywords = [(category, sub, keyword) for category, subs in CATEGORY_CONFIG.items()
+                for sub, cfg in subs.items() for keyword in cfg["keywords"]
+                if not only_keyword or keyword.lower() == only_keyword.lower()]
+    chrome = os.environ.get("CHROME_PATH")  # the Docker image ships /usr/bin/chromium, not Playwright's build
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        browser = p.chromium.launch(headless=headless,
+                                    executable_path=chrome if chrome and os.path.exists(chrome) else None)
         context = browser.new_context()
         page = context.new_page()
         for portal in portals:
-            for category, subs in CATEGORY_CONFIG.items():
-                for sub, cfg in subs.items():
-                    for keyword in cfg["keywords"]:
-                        if only_keyword and keyword.lower() != only_keyword.lower():
+            portal_items = [{"portal": portal, "category": c, "sub_category": s, "keyword": k,
+                             "tenders": [], "error": None} for c, s, k in keywords]
+            items += portal_items
+            try:  # one check per portal, so a dead portal doesn't cost a timeout per keyword
+                page.goto(portal)
+                page.wait_for_selector("#SearchDescription", timeout=30_000)
+            except Exception as e:
+                print(f"WARNING [{portal}] skipped: {e}")
+                for item in portal_items:
+                    item["error"] = f"portal unreachable / not a NIC search page: {type(e).__name__}"
+                continue
+            for item in portal_items:
+                keyword = item["keyword"]
+                try:
+                    page.goto(portal)
+                    page.fill("#SearchDescription", keyword)
+                    page.press("#SearchDescription", "Enter")
+                    page.wait_for_load_state()
+                    if page.locator("#table").count() == 0:
+                        item["error"] = "no result table (search captcha?)"
+                        print(f"WARNING [{portal}] [{keyword}] {item['error']}")
+                        continue
+                    for row in parse_results(page):
+                        if row["id"] in seen:
                             continue
-                        item = {"portal": portal, "category": category, "sub_category": sub,
-                                "keyword": keyword, "tenders": [], "error": None}
-                        items.append(item)
-                        page.goto(portal)
-                        page.fill("#SearchDescription", keyword)
-                        page.press("#SearchDescription", "Enter")
-                        page.wait_for_load_state()
-                        if page.locator("#table").count() == 0:
-                            item["error"] = "no result table (search captcha?)"
-                            print(f"WARNING [{portal}] [{keyword}] {item['error']}")
+                        seen.add(row["id"])
+                        details = tender_details(context, row["href"], row["id"])
+                        if details is None:
                             continue
-                        for row in parse_results(page):
-                            if row["id"] in seen:
-                                continue
-                            seen.add(row["id"])
-                            details = tender_details(context, row["href"], row["id"])
-                            if details is None:
-                                continue
-                            tender = {"category": category, "sub_category": sub, "keyword": keyword,
-                                      "href": row["href"], "id": row["id"], **details}
-                            results.append(tender)
-                            item["tenders"].append(tender)
+                        tender = {"category": item["category"], "sub_category": item["sub_category"],
+                                  "keyword": keyword, "href": row["href"], "id": row["id"], **details}
+                        results.append(tender)
+                        item["tenders"].append(tender)
+                except Exception as e:  # keep tenders already collected; move on to the next keyword
+                    item["error"] = f"{type(e).__name__}: {e}"
+                    print(f"WARNING [{portal}] [{keyword}] {item['error']}")
         failed = [r for r in results if not r["zip_path"]]
         # once one captcha passed the session carries sp=, so skipped zips download without a captcha now
         if failed and any(r["zip_path"] for r in results):
             print(f"retrying {len(failed)} tenders whose captcha failed...")
             for result in failed:
-                details = tender_details(context, result["href"], result.get("Tender ID") or result["id"])
+                try:
+                    details = tender_details(context, result["href"], result.get("Tender ID") or result["id"])
+                except Exception as e:
+                    print(f"WARNING [{result['id']}] retry failed: {e}")
+                    continue
                 if details:
                     result["zip_path"] = details["zip_path"]
         for result in results:

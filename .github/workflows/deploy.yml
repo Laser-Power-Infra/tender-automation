@@ -76,7 +76,7 @@ jobs:
           docker compose pull
 
           # Only the v2 services run; --remove-orphans stops containers of services commented out in docker-compose.yml
-          docker compose up -d --remove-orphans --scale automation-v2-tasks=2 automation-v2-tasks automation-v2-parsing automation-v2-api
+          docker compose up -d --remove-orphans --scale automation-v2-tasks=2 automation-v2-tasks automation-v2-parsing automation-v2-sync automation-v2-api
 
           # Cleanup old django-worker images (keep latest and previous)
           $repo = "ghcr.io/laser-power-infra/django-worker"
