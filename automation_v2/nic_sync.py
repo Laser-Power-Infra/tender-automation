@@ -10,26 +10,28 @@ from django.conf import settings
 from . import dispatch
 
 sys.path.insert(0, str(Path(__file__).parent / "nic_automation" / "src"))
-from nic_automation.scraper import scrape  # noqa: E402
+from nic_automation.scraper import log, scrape  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 
 def run(client_id: str, portals: list[str]) -> None:
-    try:
-        items = scrape(portals, headless=settings.HEADLESS_BROWSER)
-    except Exception as e:  # browser crash etc.: nothing per keyword to send, so one failed event per portal
-        for portal in portals:
-            dispatch.emit(client_id, "tender.synced_failed",
-                          {"portal": portal, "result": None, "error": f"{type(e).__name__}: {e}"})
-        raise
-    for it in items:  # one event per keyword; data.result is that keyword's tender array
+    def send(it) -> None:
+        """Called by scrape() as soon as a keyword is done: one event, data.result = its tender array."""
+        event = "tender.synced_failed" if it["error"] else "tender.synced_success"
+        log(f"webhook {event} -> client_id={client_id} ({len(it['tenders'])} tenders)")
+        # dispatch logs the outcome next: Webhook sent ... status= / delivery failed / No active subscription
         with dispatch.job_events("tender.synced", client_id, portal=it["portal"], category=it["category"],
                                  sub_category=it["sub_category"], keyword=it["keyword"]) as outcome:
             if it["error"]:
                 outcome.fail(it["error"], it["tenders"])
             else:
                 outcome.succeed(it["tenders"])
-        logger.info("sent tender.synced_%s portal=%s keyword=%r tenders=%d%s",
-                    "failed" if it["error"] else "success", it["portal"], it["keyword"], len(it["tenders"]),
-                    f" error={it['error']}" if it["error"] else "")
+
+    try:
+        scrape(portals, headless=settings.HEADLESS_BROWSER, on_keyword=send)
+    except Exception as e:  # browser crash etc.: keywords already sent stay sent; report the crash per portal
+        for portal in portals:
+            dispatch.emit(client_id, "tender.synced_failed",
+                          {"portal": portal, "result": None, "error": f"{type(e).__name__}: {e}"})
+        raise

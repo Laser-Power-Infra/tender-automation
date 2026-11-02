@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "bidyutdas@laser", email = "bidyutdas.laserpowerinfra@gmail.com" }
+    { name = "bidyutdas@laser", email = "bidyutdas.laserpowerinfra@gmail.com" },
+    { name = "utsablpi", email = "utsabkundu.laserpowerinfra@gmail.com" }
 ]
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -20,11 +20,20 @@ assert "tender.synced_success" in WEBHOOK_EVENTS and "tender.synced_failed" in W
 
 # one event per keyword; a tender without documents (captcha failed) is still a success
 tender = {"Tender ID": "2026_X_1", "Tenders Documents": [{"name": "NIT.pdf", "url": None}]}
-nic_sync.scrape = lambda portals, headless: [
+ITEMS = [
     {"portal": P, "category": "Manufacturing", "sub_category": "Cables", "keyword": "Cable", "tenders": [tender], "error": None},
     {"portal": P, "category": "EPC", "sub_category": "Solar", "keyword": "Solar PV", "tenders": [],
      "error": "no result table (search captcha?)"},
 ]
+
+
+def fake_scrape(portals, headless, on_keyword):
+    for it in ITEMS:
+        on_keyword(it)  # scrape hands each keyword over as soon as it's done
+    return ITEMS
+
+
+nic_sync.scrape = fake_scrape
 nic_sync.run("whk_test", [P])
 assert [e for _, e, _ in sent] == ["tender.synced_success", "tender.synced_failed"], sent
 assert sent[0] == ("whk_test", "tender.synced_success", {"portal": P, "category": "Manufacturing", "sub_category": "Cables",
@@ -35,7 +44,7 @@ assert sent[1][2]["error"] == "no result table (search captcha?)" and sent[1][2]
 sent.clear()
 
 
-def boom(portals, headless):
+def boom(portals, headless, on_keyword):
     raise RuntimeError("browser died")
 
 

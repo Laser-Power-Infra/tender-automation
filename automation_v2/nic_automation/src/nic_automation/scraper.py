@@ -172,22 +172,51 @@ def _use_v2_lib():
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
 
-def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False) -> list[dict]:
+def _finish(tender, extract_and_upload) -> None:
+    """Upload the tender's zip to S3; keep only the documents that came from it, each with its url."""
+    reference_no = tender.get("Tender ID") or tender["id"]
+    tender["reference_no"] = reference_no
+    zip_path = tender.pop("zip_path")
+    s3_list = []
+    if zip_path:
+        log(f"[{reference_no}] uploading zip")
+        try:
+            s3_list = extract_and_upload(zip_path, reference_no)
+        except Exception as e:
+            log(f"ERROR [{reference_no}] extract/upload failed: {e}")
+    urls = {x["key"].rsplit("/", 1)[-1]: x["url"] for x in s3_list}  # file name -> link
+    for doc in tender["Tenders Documents"]:
+        doc["url"] = urls.get(doc["name"])
+    # only documents that came from the zip and are on S3; the rest (e.g. the NIT) are dropped
+    tender["Tenders Documents"] = [d for d in tender["Tenders Documents"] if d["url"]]
+    tender.pop("href", None)
+    tender.pop("id", None)
+
+
+def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False,
+           on_keyword=None) -> list[dict]:
     """One item per (portal, keyword) searched: {portal, category, sub_category, keyword, tenders, error}.
+    `on_keyword(item)` is called as soon as each keyword is finished (uploads done), so results go out right away.
     A tender whose document captcha failed is still in `tenders`; its "Tenders Documents" is just empty
     (that list only holds files from the downloaded zip, each with its S3 url)."""
+    global _ctx
     _use_v2_lib()
     from automation_v2.lib.zip_utils import extract_and_upload
     seen = set()
     items = []
     results = []
+    any_zip = False  # once one captcha passed, the session carries sp= and later zips download without a captcha
     keywords = [(category, sub, keyword) for category, subs in CATEGORY_CONFIG.items()
                 for sub, cfg in subs.items() for keyword in cfg["keywords"]
                 if not only_keyword or keyword.lower() == only_keyword.lower()]
-    global _ctx
     started = time.monotonic()
     _ctx = ""
     log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s)")
+
+    def finish(item) -> None:
+        if on_keyword:
+            on_keyword(item)
+
     chrome = os.environ.get("CHROME_PATH")  # the Docker image ships /usr/bin/chromium, not Playwright's build
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless,
@@ -208,6 +237,7 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                 log(f"ERROR portal skipped: {type(e).__name__}: {str(e).splitlines()[0]}")
                 for item in portal_items:
                     item["error"] = f"portal unreachable / not a NIC search page: {type(e).__name__}"
+                    finish(item)
                 continue
             for ki, item in enumerate(portal_items, 1):
                 keyword = item["keyword"]
@@ -224,6 +254,7 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                         else:
                             item["error"] = "no result table and no 'No Tenders found' message (search captcha?)"
                             log(f"ERROR {item['error']}")
+                        finish(item)
                         continue
                     rows = parse_results(page)
                     new = [r for r in rows if r["id"] not in seen]
@@ -234,61 +265,46 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                         details = tender_details(context, row["href"], row["id"])
                         if details is None:
                             continue
+                        any_zip = any_zip or bool(details["zip_path"])
                         tender = {"category": item["category"], "sub_category": item["sub_category"],
                                   "keyword": keyword, "href": row["href"], "id": row["id"], **details}
                         results.append(tender)
                         item["tenders"].append(tender)
-                    log(f"done: {len(item['tenders'])} tenders")
                 except Exception as e:  # keep tenders already collected; move on to the next keyword
                     item["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
                     log(f"ERROR {item['error']} ({len(item['tenders'])} tenders kept)")
-        _ctx = ""
-        failed = [r for r in results if not r["zip_path"]]
-        # once one captcha passed the session carries sp=, so skipped zips download without a captcha now
-        if failed and any(r["zip_path"] for r in results):
-            log(f"retrying {len(failed)} tenders whose captcha failed")
-            for result in failed:
-                _ctx = f"[retry '{result['keyword']}']"
-                try:
-                    details = tender_details(context, result["href"], result.get("Tender ID") or result["id"])
-                except Exception as e:
-                    log(f"WARNING [{result['id']}] retry failed: {e}")
-                    continue
-                if details:
-                    result["zip_path"] = details["zip_path"]
-                log(f"[{result['id']}] {'retry ok' if result['zip_path'] else 'still no zip'}")
-        for result in results:
-            reference_no = result.get("Tender ID") or result["id"]
-            _ctx = f"[upload '{result['keyword']}']"
-            result["reference_no"] = reference_no
-            zip_path = result.pop("zip_path")
-            s3_list = []
-            if zip_path:
-                log(f"[{reference_no}] uploading zip")
-                try:
-                    s3_list = extract_and_upload(zip_path, reference_no)
-                except Exception as e:
-                    log(f"ERROR [{reference_no}] extract/upload failed: {e}")
-            urls = {x["key"].rsplit("/", 1)[-1]: x["url"] for x in s3_list}  # file name -> link
-            for doc in result["Tenders Documents"]:
-                doc["url"] = urls.get(doc["name"])
-            # only documents that came from the zip and are on S3; the rest (e.g. the NIT) are dropped
-            result["Tenders Documents"] = [d for d in result["Tenders Documents"] if d["url"]]
-            result.pop("href", None)
-            result.pop("id", None)
+                failed = [t for t in item["tenders"] if not t["zip_path"]]
+                if failed and any_zip:
+                    log(f"retrying {len(failed)} tenders whose captcha failed")
+                    for tender in failed:
+                        try:
+                            details = tender_details(context, tender["href"], tender.get("Tender ID") or tender["id"])
+                            if details:
+                                tender["zip_path"] = details["zip_path"]
+                        except Exception as e:
+                            log(f"WARNING [{tender['id']}] retry failed: {e}")
+                        log(f"[{tender['id']}] {'retry ok' if tender['zip_path'] else 'still no zip'}")
+                for tender in item["tenders"]:
+                    _finish(tender, extract_and_upload)
+                if not item["error"]:
+                    log(f"done: {len(item['tenders'])} tenders")
+                finish(item)
         browser.close()
     _ctx = ""
     bad = sum(1 for i in items if i["error"])
-    with_docs = sum(1 for r in results if any(d["url"] for d in r["Tenders Documents"]))
+    with_docs = sum(1 for r in results if r["Tenders Documents"])
     log(f"scrape done in {(time.monotonic() - started) / 60:.1f}m: {len(items)} keyword searches "
         f"({len(items) - bad} ok, {bad} failed), {len(results)} tenders ({with_docs} with documents)")
     return items
 
 
 def run(only_keyword: str | None = None) -> None:
-    """Manual run: `python -m nic_automation [keyword]` prints one array per keyword."""
+    """Manual run: `python -m nic_automation [keyword]` prints each keyword's array as soon as it's done."""
     only_keyword = only_keyword or (sys.argv[1] if len(sys.argv) > 1 else None)
     sys.stdout.reconfigure(errors="replace")  # page fields contain ₹, which crashes a cp1252 console
-    for item in scrape(website, only_keyword):
+
+    def show(item):
         if item["tenders"]:
-            print(json.dumps(item["tenders"], ensure_ascii=False, indent=2))
+            print(json.dumps(item["tenders"], ensure_ascii=False, indent=2), flush=True)
+
+    scrape(website, only_keyword, on_keyword=show)
