@@ -10,7 +10,7 @@ from django.conf import settings
 from . import dispatch
 
 sys.path.insert(0, str(Path(__file__).parent / "nic_automation" / "src"))
-from nic_automation.src.nic_automation.scraper import scrape  # noqa: E402
+from nic_automation.scraper import scrape  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
