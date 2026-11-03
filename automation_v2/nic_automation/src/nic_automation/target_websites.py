@@ -151,25 +151,15 @@ CATEGORY_CONFIG = {
                 "Cable",
                 # "LT Power Cables (Armoured or Unarmoured)",
                 # "MV Power Cables (Medium Voltage)",
-                "Control Cables",
-                # "Signalling Cables",
-                # "Aerial Bunched (AB) Cables",
-                # "PVC Power Cables",
-                # "XLPE Power Cables",
+                "Supply of LT Power Cable", "HT Power Cable", "Control Cable", "XLPE Cable", "PVC Cable"
             ]
         },
 
         "Conductors": {
             "keywords": [
                 "Conductor",
-                "ACSR Conductors",
-                # "AAC Conductors",
-                # "AAAC Conductors",
-                # "AL-59 Conductors",
-                # "AL-7 Conductors",
-                # "ASTER Conductors",
-                # "HTLS (AECC/TS) Conductors",
-                # "Medium Voltage Covered Conductors (MVCC)",
+                "AAA Conductor",
+                 "AA Conductor", "ACSR Conductor", "AAAC", "AAC", "ACSR in India"
             ]
         },
     },
