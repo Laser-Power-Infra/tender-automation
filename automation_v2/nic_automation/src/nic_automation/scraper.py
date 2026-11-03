@@ -3,22 +3,25 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
-from nic_automation.captcha_decoder import fix_case, solve_candidates
+from nic_automation.captcha_decoder import _model, fix_case, solve_candidates
 from nic_automation.target_websites import CATEGORY_CONFIG, EXCLUSION_KEYWORDS, website
 
 
-_ctx = ""  # "[wbtenders.gov.in] [12/150 EPC/Distribution 'PSS']", set per keyword so every line says where it is
+# per thread: "[wbtenders.gov.in] [EPC/Distribution 12/40 'PSS']", set per keyword so every line says where it is
+_local = threading.local()
 
 
 def log(msg: str) -> None:
-    print(f"{datetime.now():%H:%M:%S} {_ctx} {msg}".replace("  ", " "), flush=True)
+    print(f"{datetime.now():%H:%M:%S} {getattr(_local, 'ctx', '')} {msg}".replace("  ", " "), flush=True)
 
 
 def is_excluded(text: str) -> bool:
@@ -191,55 +194,34 @@ def _finish(tender, extract_and_upload) -> None:
     tender.pop("id", None)
 
 
-def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False,
-           on_keyword=None) -> list[dict]:
-    """One item per (portal, keyword) searched: {portal, category, sub_category, keyword, tenders, error}.
-    `on_keyword(item)` is called as soon as each keyword is finished (uploads done), so results go out right away.
-    A tender whose document captcha failed is still in `tenders`; its "Tenders Documents" is just empty
-    (that list only holds files from the downloaded zip, each with its S3 url)."""
-    global _ctx
-    _use_v2_lib()
-    from automation_v2.lib.zip_utils import extract_and_upload
-    seen = set()
-    items = []
-    results = []
-    any_zip = False  # once one captcha passed, the session carries sp= and later zips download without a captcha
-    keywords = [(category, sub, keyword) for category, subs in CATEGORY_CONFIG.items()
-                for sub, cfg in subs.items() for keyword in cfg["keywords"]
-                if not only_keyword or keyword.lower() == only_keyword.lower()]
-    started = time.monotonic()
-    _ctx = ""
-    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s)")
-
-    def finish(item) -> None:
-        if on_keyword:
-            on_keyword(item)
-
-    chrome = os.environ.get("CHROME_PATH")  # the Docker image ships /usr/bin/chromium, not Playwright's build
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless,
-                                    executable_path=chrome if chrome and os.path.exists(chrome) else None)
-        context = browser.new_context()
-        page = context.new_page()
-        for pi, portal in enumerate(portals, 1):
-            host = urlparse(portal).netloc
-            _ctx = f"[{host}]"
-            portal_items = [{"portal": portal, "category": c, "sub_category": s, "keyword": k,
-                             "tenders": [], "error": None} for c, s, k in keywords]
-            items += portal_items
-            log(f"portal {pi}/{len(portals)} {portal}")
-            try:  # one check per portal, so a dead portal doesn't cost a timeout per keyword
+def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, finish) -> None:
+    """One sub-category's keywords on one portal, in this thread's own browser (Playwright objects are per thread).
+    Fills each item of `group` in place; a browser crash marks the unfinished items failed instead of raising."""
+    host = urlparse(portal).netloc
+    label = f"{group[0]['category']}/{group[0]['sub_category']}"
+    _local.ctx = f"[{host}] [{label}]"
+    done = 0
+    try:
+        chrome = os.environ.get("CHROME_PATH")  # the Docker image ships /usr/bin/chromium, not Playwright's build
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless,
+                                        executable_path=chrome if chrome and os.path.exists(chrome) else None)
+            context = browser.new_context()
+            page = context.new_page()
+            try:  # one check per group, so a dead portal doesn't cost a timeout per keyword
                 page.goto(portal)
                 page.wait_for_selector("#SearchDescription", timeout=30_000)
             except Exception as e:
                 log(f"ERROR portal skipped: {type(e).__name__}: {str(e).splitlines()[0]}")
-                for item in portal_items:
+                for item in group:
                     item["error"] = f"portal unreachable / not a NIC search page: {type(e).__name__}"
                     finish(item)
-                continue
-            for ki, item in enumerate(portal_items, 1):
+                done = len(group)
+                return
+            any_zip = False  # once one captcha passed, the session carries sp= and later zips download without a captcha
+            for ki, item in enumerate(group, 1):
                 keyword = item["keyword"]
-                _ctx = f"[{host}] [{ki}/{len(portal_items)} {item['category']}/{item['sub_category']} '{keyword}']"
+                _local.ctx = f"[{host}] [{label} {ki}/{len(group)} '{keyword}']"
                 try:
                     log("searching...")
                     page.goto(portal)
@@ -253,21 +235,21 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                             item["error"] = "no result table and no 'No Tenders found' message (search captcha?)"
                             log(f"ERROR {item['error']}")
                         finish(item)
+                        done = ki
                         continue
                     rows = parse_results(page)
-                    new = [r for r in rows if r["id"] not in seen]
+                    with seen_lock:  # shared across sub-categories: a tender found twice is opened once
+                        new = [r for r in rows if r["id"] not in seen]
+                        seen.update(r["id"] for r in new)
                     log(f"{len(rows)} result rows ({len(new)} new, {len(rows) - len(new)} already seen)")
                     for ti, row in enumerate(new, 1):
-                        seen.add(row["id"])
                         log(f"tender {ti}/{len(new)} {row['id']}: opening")
                         details = tender_details(context, row["href"], row["id"])
                         if details is None:
                             continue
                         any_zip = any_zip or bool(details["zip_path"])
-                        tender = {"category": item["category"], "sub_category": item["sub_category"],
-                                  "keyword": keyword, "href": row["href"], "id": row["id"], **details}
-                        results.append(tender)
-                        item["tenders"].append(tender)
+                        item["tenders"].append({"category": item["category"], "sub_category": item["sub_category"],
+                                                "keyword": keyword, "href": row["href"], "id": row["id"], **details})
                 except Exception as e:  # keep tenders already collected; move on to the next keyword
                     item["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
                     log(f"ERROR {item['error']} ({len(item['tenders'])} tenders kept)")
@@ -287,8 +269,54 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                 if not item["error"]:
                     log(f"done: {len(item['tenders'])} tenders")
                 finish(item)
-        browser.close()
-    _ctx = ""
+                done = ki
+            browser.close()
+    except Exception as e:  # browser crash: the other sub-categories keep going
+        err = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
+        log(f"ERROR browser crashed, {len(group) - done} keyword(s) not searched: {err}")
+        for item in group[done:]:
+            item["error"] = item["error"] or f"browser crashed: {err}"
+            finish(item)
+    finally:
+        _local.ctx = ""
+
+
+def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False,
+           on_keyword=None) -> list[dict]:
+    """One item per (portal, keyword) searched: {portal, category, sub_category, keyword, tenders, error}.
+    Per portal, every sub-category runs at the same time in its own browser; portals run one after another.
+    `on_keyword(item)` is called (from a worker thread) as soon as each keyword is finished (uploads done).
+    A tender whose document captcha failed is still in `tenders`; its "Tenders Documents" is just empty
+    (that list only holds files from the downloaded zip, each with its S3 url)."""
+    _use_v2_lib()
+    from automation_v2.lib.zip_utils import extract_and_upload
+    _model()  # load the OCR model once here, not racing in every thread
+    seen, seen_lock = set(), threading.Lock()
+    items = []
+    keywords = [(category, sub, keyword) for category, subs in CATEGORY_CONFIG.items()
+                for sub, cfg in subs.items() for keyword in cfg["keywords"]
+                if not only_keyword or keyword.lower() == only_keyword.lower()]
+    started = time.monotonic()
+    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s)")
+
+    def finish(item) -> None:
+        if on_keyword:
+            on_keyword(item)
+
+    for pi, portal in enumerate(portals, 1):
+        portal_items = [{"portal": portal, "category": c, "sub_category": s, "keyword": k,
+                         "tenders": [], "error": None} for c, s, k in keywords]
+        items += portal_items
+        groups = {}
+        for item in portal_items:
+            groups.setdefault((item["category"], item["sub_category"]), []).append(item)
+        log(f"portal {pi}/{len(portals)} {portal}: {len(groups)} sub-categories in parallel")
+        with ThreadPoolExecutor(max_workers=max(len(groups), 1)) as pool:
+            futures = [pool.submit(_scrape_group, portal, g, seen, seen_lock, headless, extract_and_upload, finish)
+                       for g in groups.values()]
+            for f in futures:
+                f.result()
+    results = [t for i in items for t in i["tenders"]]
     bad = sum(1 for i in items if i["error"])
     with_docs = sum(1 for r in results if r["Tenders Documents"])
     log(f"scrape done in {(time.monotonic() - started) / 60:.1f}m: {len(items)} keyword searches "
