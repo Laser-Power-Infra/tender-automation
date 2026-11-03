@@ -120,13 +120,6 @@ def fix_case(text: str, data: bytes) -> str:
     return "".join(out)
 
 
-def save_captcha(data, path):
-    """Save the flattened image (what OCR saw) so it can be checked by eye."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _flatten_image(data).save(path)
-
-
 def solve(path):
     """Return the CAPTCHA text read from the image at `path`."""
     return solve_bytes(Path(path).read_bytes())

@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
-from nic_automation.captcha_decoder import fix_case, save_captcha, solve_candidates
+from nic_automation.captcha_decoder import fix_case, solve_candidates
 from nic_automation.target_websites import CATEGORY_CONFIG, EXCLUSION_KEYWORDS, website
 
 
@@ -59,7 +59,6 @@ CAPTCHA_IMG = "#captchaImage"
 CAPTCHA_REFRESH = "#captcha"
 CAPTCHA_SUBMIT = "#Submit"
 CAPTCHA_TRIES = 10
-CAPTCHA_DIR = DOWNLOAD_DIR / "captcha"
 
 
 def _captcha_image(tab):
@@ -95,7 +94,6 @@ def _auto_captcha(tab, tender_id, tries=CAPTCHA_TRIES):
             _refresh_captcha(tab, src)
             continue
         text = str(fix_case(text, image))
-        save_captcha(image, CAPTCHA_DIR / f"{tender_id}_{submitted + 1}_{re.sub(r'[^A-Za-z0-9]', '', text)}.png")
         submitted += 1
         log(f"[{tender_id}] captcha attempt {submitted}/{tries}: {text}")
         tab.fill(CAPTCHA_TEXT, text)
