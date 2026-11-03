@@ -31,6 +31,10 @@ RETRY_QUEUE = "automation-v2:webhooks:retry"
 DEAD_QUEUE = "automation-v2:webhooks:dead"
 
 
+class Requeue(Exception):
+    """Raised by a job to go to the end of its queue again; job_events sends no webhook for it."""
+
+
 class Outcome:
     def __init__(self, ids: dict):
         self.ids = ids               # identifiers copied into data (type, referenceNo)
@@ -49,16 +53,21 @@ class Outcome:
 def job_events(base: str, client_id: str | None, **ids):
     """Emit <base>_success / <base>_failed to client_id when the block exits. Exceptions are re-raised."""
     outcome = Outcome(ids)
+    requeued = False
     try:
         yield outcome
+    except Requeue:
+        requeued = True  # not finished yet: the event goes out on the run that ends it
+        raise
     except BaseException as e:
         outcome.fail(f"{type(e).__name__}: {e}", outcome.result)
         raise
     finally:
-        if outcome.ok is None:
-            outcome.fail("job ended without a result", outcome.result)
-        emit(client_id, f"{base}_{'success' if outcome.ok else 'failed'}",
-             {**outcome.ids, "result": outcome.result, "error": outcome.error})
+        if not requeued:
+            if outcome.ok is None:
+                outcome.fail("job ended without a result", outcome.result)
+            emit(client_id, f"{base}_{'success' if outcome.ok else 'failed'}",
+                 {**outcome.ids, "result": outcome.result, "error": outcome.error})
 
 
 def client_id_from(payload: dict) -> str | None:

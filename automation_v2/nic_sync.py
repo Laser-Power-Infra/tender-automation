@@ -26,14 +26,14 @@ def run(client_id: str, portals: list[str]) -> None:
             logger.exception("NIC scrape crashed portal=%s", portal)
             log(f"[{portal}] webhook nic.synced_failed -> client_id={client_id} (portal crashed)")
             dispatch.emit(client_id, "nic.synced_failed",
-                          {"type": "NIC_SYNC", "result": None, "error": f"{type(e).__name__}: {e}"})
+                          {"type": "NIC_SYNC", "portal": portal, "result": None, "error": f"{type(e).__name__}: {e}"})
             continue
-        for it in items:  # one event per keyword: data = {"type": "NIC_SYNC", "result": [tenders], "error"}
+        for it in items:  # one event per keyword: data = {"type": "NIC_SYNC", "portal", "result": [tenders], "error"}
             event = "nic.synced_failed" if it["error"] else "nic.synced_success"
             log(f"[{it['portal']}] '{it['keyword']}' webhook {event} -> client_id={client_id} "
                 f"({len(it['tenders'])} tenders)")
             # dispatch logs the outcome next: Webhook sent ... status= / delivery failed / No active subscription
-            with dispatch.job_events("nic.synced", client_id, type="NIC_SYNC") as outcome:
+            with dispatch.job_events("nic.synced", client_id, type="NIC_SYNC", portal=it["portal"]) as outcome:
                 if it["error"]:
                     outcome.fail(it["error"], it["tenders"])
                 else:

@@ -13,6 +13,13 @@ class FetchJob(BaseModel):
     referenceNo: str = Field(min_length=1)
 
 
+class NicFetchJob(BaseModel):
+    """{"type": "NIC_DOWNLOAD", "referenceNo": "<Tender ID>", "portal": "https://wbtenders.gov.in", "client_id": ...}"""
+    type: Literal["NIC_DOWNLOAD"]
+    referenceNo: str = Field(min_length=1)
+    portal: str = Field(pattern=r"^https?://")
+
+
 class FileParseJob(BaseModel):
     type: Literal["GEM_PDF_PARSING", "RA_GEM_PDF_PARSING", "NON_GEM_BOQ_PARSING"]
     referenceNo: str = Field(min_length=1)
@@ -32,6 +39,6 @@ class SyncJob(BaseModel):
     portals: list[Annotated[str, Field(pattern=r"^https?://")]] = Field(min_length=1)
 
 
-fetch_adapter = TypeAdapter(FetchJob)
+fetch_adapter = TypeAdapter(Annotated[Union[FetchJob, NicFetchJob], Field(discriminator="type")])
 sync_adapter = TypeAdapter(SyncJob)
 parse_adapter = TypeAdapter(Annotated[Union[FileParseJob, CostingParseJob], Field(discriminator="type")])

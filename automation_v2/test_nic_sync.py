@@ -50,14 +50,15 @@ def fake_scrape(portals, headless):
 nic_sync.scrape = fake_scrape
 nic_sync.run("whk_test", [P])
 assert [e for _, e, _ in sent] == ["nic.synced_success", "nic.synced_failed"], sent
-assert sent[0] == ("whk_test", "nic.synced_success", {"type": "NIC_SYNC", "result": [tender], "error": None})
-assert sent[1][2] == {"type": "NIC_SYNC", "result": [], "error": "no result table (search captcha?)"}
+assert sent[0] == ("whk_test", "nic.synced_success", {"type": "NIC_SYNC", "portal": P, "result": [tender], "error": None})
+assert sent[1][2] == {"type": "NIC_SYNC", "portal": P, "result": [], "error": "no result table (search captcha?)"}
 
 # one portal crashing: one failed event for it, and the next portal still runs
 sent.clear()
 nic_sync.run("whk_test", ["https://dead.example.in", P])
 assert [e for _, e, _ in sent] == ["nic.synced_failed", "nic.synced_success", "nic.synced_failed"], sent
-assert sent[0][2] == {"type": "NIC_SYNC", "result": None, "error": "RuntimeError: browser died"}
+assert sent[0][2] == {"type": "NIC_SYNC", "portal": "https://dead.example.in", "result": None,
+                      "error": "RuntimeError: browser died"}
 
 # payload validation
 assert sync_adapter.validate_python({"client_id": "whk_x", "portals": [P]}).portals == [P]

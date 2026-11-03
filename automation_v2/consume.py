@@ -10,7 +10,7 @@ import os
 import pika
 from django.conf import settings
 
-from .dispatch import client_id_from, job_events
+from .dispatch import Requeue, client_id_from, job_events
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,19 @@ def handle(ch, method, body: bytes, base: str, adapter, handlers: dict) -> None:
     ids = {"type": raw.get("type"), "referenceNo": raw.get("referenceNo")}
     if base == "file.parsed":
         ids["file_link"] = raw.get("file_link")  # echoed so receivers can match the event to the file they sent
+    if base == "file.fetched" and raw.get("type") == "NIC_DOWNLOAD":
+        ids["portal"] = raw.get("portal")  # same reference no. can exist on two NIC portals
     try:
         with job_events(base, client_id_from(raw), **ids) as outcome:
             job = adapter.validate_python(raw)
             logger.info("Job start type=%s referenceNo=%s", job.type, job.referenceNo)
             outcome.succeed(handlers[job.type](job))
         logger.info("Job done type=%s referenceNo=%s", job.type, job.referenceNo)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    except Requeue as e:
+        # shortcut: no retry limit (user's choice); a job that never succeeds cycles through the queue forever
+        logger.info("Job requeued to the end of %s: %s payload=%s", method.routing_key, e, raw)
+        ch.basic_publish("", method.routing_key, body, pika.BasicProperties(delivery_mode=2, content_type="application/json"))
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception:
         # ponytail: nack without requeue or DLX drops the message, same as legacy; add a DLX if replay matters
