@@ -4,6 +4,7 @@ Run: uv run python -m automation_v2.test_nic_fetch
 """
 import json
 import os
+import time
 
 import django
 
@@ -21,6 +22,11 @@ dispatch.emit = lambda cid, event, data: sent.append((cid, event, data))
 class Ch:
     def __init__(self):
         self.published, self.acked, self.nacked = [], [], []
+        self.connection, self.heartbeats = self, 0
+
+    def process_data_events(self, time_limit):  # what keeps the broker connection alive during a long job
+        self.heartbeats += 1
+        time.sleep(min(time_limit, 0.05))
 
     def basic_publish(self, exchange, routing_key, body, properties=None):
         self.published.append((exchange, routing_key, body))
@@ -75,6 +81,12 @@ sent.clear()
 ch = Ch()
 consume.handle(ch, Method, body, "file.fetched", fetch_adapter, {"NIC_DOWNLOAD": lambda job: 1 / 0})
 assert ch.nacked == [7] and not ch.published and [e for _, e, _ in sent] == ["file.fetched_failed"], (vars(ch), sent)
+
+# long job: runs off the consumer thread, which keeps polling the connection (heartbeats), then acks
+sent.clear()
+ch = Ch()
+consume.handle(ch, Method, body, "file.fetched", fetch_adapter, {"NIC_DOWNLOAD": lambda job: time.sleep(0.5) or FILES})
+assert ch.heartbeats >= 5 and ch.acked == [7] and [e for _, e, _ in sent] == ["file.fetched_success"], (vars(ch), sent)
 
 # tags: BOQ Excel -> boqComparativeChart, everything else -> tenderDocument
 from automation_v2.nic_fetch import _tag  # noqa: E402

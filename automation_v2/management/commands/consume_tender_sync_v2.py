@@ -5,7 +5,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from automation_v2 import nic_sync
-from automation_v2.consume import get_channel
+from automation_v2.consume import get_channel, run_keeping_alive
 from automation_v2.dispatch import client_id_from
 from automation_v2.schemas import sync_adapter
 
@@ -23,15 +23,15 @@ def on_message(ch, method, _properties, body: bytes) -> None:
         logger.exception("Bad sync job dropped: %r", body[:200])  # no valid client_id/portals: nobody to notify
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
-    # shortcut: ack before the run; a scrape of all keywords outlives the pika heartbeat, so a late ack fails.
-    # A crash is still reported as nic.synced_failed but not redelivered; run in a thread with heartbeats if that matters.
-    ch.basic_ack(delivery_tag=method.delivery_tag)
     logger.info("Sync start client_id=%s portals=%s", client_id, job.portals)
     try:
-        nic_sync.run(client_id, job.portals)
+        # the scrape runs in a thread so heartbeats keep going; ack after it, so prefetch=1 holds the next job back.
+        # A worker killed mid-scrape gets the job redelivered (keywords already sent are sent again).
+        run_keeping_alive(ch.connection, lambda: nic_sync.run(client_id, job.portals))
         logger.info("Sync done client_id=%s", client_id)
     except Exception:
         logger.exception("Sync failed client_id=%s", client_id)
+    ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
 class Command(BaseCommand):

@@ -6,6 +6,7 @@ One message = one job = exactly one webhook event. A handler returns the result
 import json
 import logging
 import os
+import threading
 
 import pika
 from django.conf import settings
@@ -19,6 +20,30 @@ def get_channel(queue: str):
     channel = pika.BlockingConnection(pika.URLParameters(settings.MQ_URL)).channel()
     channel.queue_declare(queue=queue, durable=True)
     return channel
+
+
+def run_keeping_alive(connection, fn):
+    """Run fn() in a thread while this thread keeps answering broker heartbeats; returns its result or re-raises.
+    A long job run directly in the consumer callback blocks heartbeats, the broker drops the connection and the
+    later ack fails (StreamLostError). Acks/publishes stay on this thread: pika objects aren't thread-safe."""
+    box = {}
+
+    def target():
+        from django.db import connections
+        try:
+            box["result"] = fn()
+        except BaseException as e:
+            box["error"] = e
+        finally:
+            connections.close_all()  # this thread's DB connection (webhook lookup in dispatch.emit)
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        connection.process_data_events(time_limit=1)
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def handle(ch, method, body: bytes, base: str, adapter, handlers: dict) -> None:
@@ -36,12 +61,16 @@ def handle(ch, method, body: bytes, base: str, adapter, handlers: dict) -> None:
         ids["file_link"] = raw.get("file_link")  # echoed so receivers can match the event to the file they sent
     if base == "file.fetched" and raw.get("type") == "NIC_DOWNLOAD":
         ids["portal"] = raw.get("portal")  # same reference no. can exist on two NIC portals
-    try:
+    def work():
         with job_events(base, client_id_from(raw), **ids) as outcome:
             job = adapter.validate_python(raw)
             logger.info("Job start type=%s referenceNo=%s", job.type, job.referenceNo)
             outcome.succeed(handlers[job.type](job))
         logger.info("Job done type=%s referenceNo=%s", job.type, job.referenceNo)
+
+    try:
+        # prefetch_count=1 and this message is unacked, so no other delivery arrives while we wait
+        run_keeping_alive(ch.connection, work)
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Requeue as e:
         # shortcut: no retry limit (user's choice); a job that never succeeds cycles through the queue forever
