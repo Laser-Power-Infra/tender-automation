@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -29,16 +29,45 @@ def is_excluded(text: str) -> bool:
     return any(k.lower() in text for k in EXCLUSION_KEYWORDS)
 
 
+IST = timezone(timedelta(hours=5, minutes=30))  # portal dates are India time; the container clock is UTC
+
+
+def today_ist() -> date:
+    return datetime.now(IST).date()
+
+
+def published_date(text: str) -> date | None:
+    """Date part of an e-Published Date cell like "10-Nov-2026 02:15 PM"; None if it can't be read."""
+    try:
+        return datetime.strptime((text or "").split()[0], "%d-%b-%Y").date()
+    except (ValueError, IndexError):
+        return None
+
+
+def published_col(page) -> int:
+    """Index of the "e-Published Date" column, from the list header (S.No, e-Published Date, ... is the norm)."""
+    headers = page.locator("#table tr.list_header td").all_inner_texts()
+    return next((i for i, h in enumerate(headers) if "published" in h.lower()), 1)
+
+
 def parse_results(page):
-    """Rows of the result table: detail link and the tender id shown in the list."""
+    """Rows of the result table: detail link, the tender id shown in the list and its e-Published date."""
     rows = []
+    col = published_col(page)
     for tr in page.locator("#table tr.even, #table tr.odd").all():
         link = tr.locator("a[title='View Tender Information']")
-        cell = tr.locator("td").nth(4).inner_text().replace(link.inner_text(), "")
+        tds = tr.locator("td")
+        cell = tds.nth(4).inner_text().replace(link.inner_text(), "")
         refs = re.findall(r"\[([^\]]*)\]", cell)  # [ref no][tender id]
         rows.append({"id": refs[-1] if refs else link.get_attribute("href"),
-                     "href": urljoin(page.url, link.get_attribute("href"))})
+                     "href": urljoin(page.url, link.get_attribute("href")),
+                     "published": published_date(tds.nth(col).inner_text()) if tds.count() > col else None})
     return rows
+
+
+assert published_date("10-Nov-2026 02:15 PM") == date(2026, 11, 10)
+assert published_date(" 06-Nov-2026 05:15 PM ") == date(2026, 11, 6)
+assert published_date("") is None and published_date("NA") is None
 
 
 # every "label | value" pair of the page, keyed by the page's own label; nested tables (documents) are skipped
@@ -194,7 +223,7 @@ def _finish(tender, extract_and_upload) -> None:
     tender.pop("id", None)
 
 
-def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, finish) -> None:
+def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, finish, today) -> None:
     """One sub-category's keywords on one portal, in this thread's own browser (Playwright objects are per thread).
     Fills each item of `group` in place; a browser crash marks the unfinished items failed instead of raising."""
     host = urlparse(portal).netloc
@@ -238,10 +267,11 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
                         done = ki
                         continue
                     rows = parse_results(page)
+                    fresh = [r for r in rows if r["published"] == today]  # only tenders e-Published today
                     with seen_lock:  # shared across sub-categories: a tender found twice is opened once
-                        new = [r for r in rows if r["id"] not in seen]
+                        new = [r for r in fresh if r["id"] not in seen]
                         seen.update(r["id"] for r in new)
-                    log(f"{len(rows)} result rows ({len(new)} new, {len(rows) - len(new)} already seen)")
+                    log(f"{len(rows)} result rows ({len(fresh)} published {today:%d-%b-%Y}, {len(new)} new)")
                     for ti, row in enumerate(new, 1):
                         log(f"tender {ti}/{len(new)} {row['id']}: opening")
                         details = tender_details(context, row["href"], row["id"])
@@ -297,7 +327,8 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                 for sub, cfg in subs.items() for keyword in cfg["keywords"]
                 if not only_keyword or keyword.lower() == only_keyword.lower()]
     started = time.monotonic()
-    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s)")
+    today = today_ist()  # each run picks the tenders e-Published on the day it runs
+    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s), e-Published {today:%d-%b-%Y} only")
 
     def finish(item) -> None:
         if on_keyword:
@@ -312,8 +343,8 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
             groups.setdefault((item["category"], item["sub_category"]), []).append(item)
         log(f"portal {pi}/{len(portals)} {portal}: {len(groups)} sub-categories in parallel")
         with ThreadPoolExecutor(max_workers=max(len(groups), 1)) as pool:
-            futures = [pool.submit(_scrape_group, portal, g, seen, seen_lock, headless, extract_and_upload, finish)
-                       for g in groups.values()]
+            futures = [pool.submit(_scrape_group, portal, g, seen, seen_lock, headless, extract_and_upload, finish,
+                                   today) for g in groups.values()]
             for f in futures:
                 f.result()
     results = [t for i in items for t in i["tenders"]]

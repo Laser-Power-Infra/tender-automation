@@ -47,18 +47,40 @@ def fake_scrape(portals, headless):
         scraping = False
 
 
+untitled = {"Tender ID": "2026_X_9", "organisation": "Agra Development Authority", "keyword": None,
+            "Tenders Documents": [{"name": "NIT.pdf", "url": "https://s3/y"}]}
+flows = []
+
+
+def fake_untitled(portal, headless):
+    global scraping
+    flows.append(("org", portal))
+    scraping = True
+    try:
+        if portal == "https://dead.example.in":
+            raise RuntimeError("org page died")
+        return [{"portal": portal, "organisation": "Agra Development Authority", "tenders": [untitled], "error": None}]
+    finally:
+        scraping = False
+
+
 nic_sync.scrape = fake_scrape
+nic_sync.scrape_untitled = fake_untitled
 nic_sync.run("whk_test", [P])
-assert [e for _, e, _ in sent] == ["nic.synced_success", "nic.synced_failed"], sent
+# keyword events first, then one event per organisation with untitled tenders
+assert [e for _, e, _ in sent] == ["nic.synced_success", "nic.synced_failed", "nic.synced_success"], sent
 assert sent[0] == ("whk_test", "nic.synced_success", {"type": "NIC_SYNC", "portal": P, "result": [tender], "error": None})
 assert sent[1][2] == {"type": "NIC_SYNC", "portal": P, "result": [], "error": "no result table (search captcha?)"}
+assert sent[2][2] == {"type": "NIC_SYNC", "portal": P, "result": [untitled], "error": None}
 
-# one portal crashing: one failed event for it, and the next portal still runs
+# one portal crashing: one failed event per crashed flow, and the next portal still runs both flows
 sent.clear()
 nic_sync.run("whk_test", ["https://dead.example.in", P])
-assert [e for _, e, _ in sent] == ["nic.synced_failed", "nic.synced_success", "nic.synced_failed"], sent
+assert [e for _, e, _ in sent] == ["nic.synced_failed", "nic.synced_failed",
+                                   "nic.synced_success", "nic.synced_failed", "nic.synced_success"], sent
 assert sent[0][2] == {"type": "NIC_SYNC", "portal": "https://dead.example.in", "result": None,
                       "error": "RuntimeError: browser died"}
+assert sent[1][2]["error"] == "RuntimeError: org page died"
 
 # payload validation
 assert sync_adapter.validate_python({"client_id": "whk_x", "portals": [P]}).portals == [P]
