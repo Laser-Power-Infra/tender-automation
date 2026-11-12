@@ -17,13 +17,10 @@ from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
 from nic_automation.captcha_decoder import _model
-from nic_automation.scraper import (_finish, _local, _use_v2_lib, log, published_col, published_date, published_window,
-                                    tender_details, window_label)
+from nic_automation.scraper import (MAX_PAGES, NEXT_PAGE, _finish, _local, _use_v2_lib, log, published_col,
+                                    published_date, published_window, tender_details, window_label)
 
 ORG_LINK = 'a[title="Tenders by Organisation"]'
-# wbtenders lists all of an org's tenders on one page (723 rows seen); this only matters if a portal pages them
-NEXT_PAGE = 'a#linkFwd, a:text-is("Next >")'
-MAX_PAGES = 1000  # guard against a pager that never ends
 
 
 def _norm(text: str) -> str:
@@ -46,11 +43,15 @@ def _organisations(page) -> list[tuple[str, str]]:
     return orgs
 
 
-def _untitled_rows(page, dates) -> list[dict]:
+def _untitled_rows(page, dates, page_no: int = 1) -> list[dict]:
     """Untitled tenders e-Published on one of `dates` on the current list page: {"id", "ref", "href"}."""
     rows = []
     col = published_col(page)
-    for tr in page.locator("#table tr.even, #table tr.odd").all():
+    trs = page.locator("#table tr.even, #table tr.odd").all()
+    log(f"list page {page_no}: reading {len(trs)} row(s)")  # a big list takes minutes: show it is not stuck
+    for i, tr in enumerate(trs):
+        if i and i % 500 == 0:
+            log(f"list page {page_no}: {i}/{len(trs)} rows read, {len(rows)} untitled so far")
         link = tr.locator("a[title='View Tender Information']")
         tds = tr.locator("td")
         if not link.count() or tds.count() <= max(col, 4):
@@ -63,6 +64,7 @@ def _untitled_rows(page, dates) -> list[dict]:
         if len(refs) >= 2 and is_untitled(title, refs[-2]):
             rows.append({"id": refs[-1].strip(), "ref": refs[-2].strip(),
                          "href": urljoin(page.url, link.first.get_attribute("href"))})
+            log(f"found untitled tender {rows[-1]['id']} ({rows[-1]['ref']})")
     return rows
 
 
@@ -108,12 +110,13 @@ def scrape_untitled(portal: str, headless: bool = False, on_org=None, days: int 
                 _local.ctx = f"[{host}] [org {oi}/{len(orgs)} '{name}']"
                 item = {"portal": portal, "organisation": name, "tenders": [], "error": None}
                 try:
+                    log("opening tender list")
                     page.goto(href)
                     page.wait_for_load_state()
                     rows, pages = [], 0
                     while pages < MAX_PAGES:
                         pages += 1
-                        rows += [r for r in _untitled_rows(page, dates) if r["id"] not in seen]
+                        rows += [r for r in _untitled_rows(page, dates, pages) if r["id"] not in seen]
                         nxt = page.locator(NEXT_PAGE)
                         if not nxt.count():
                             break

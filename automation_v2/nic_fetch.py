@@ -18,9 +18,8 @@ if __name__ == "__main__":
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 from .dispatch import Requeue  # noqa: E402
-from .fetch import BOQ_FILE, _file, _non_gem_tag  # noqa: E402
+from .fetch import BOQ_FILE, TENDER_DOCUMENT, _file, _non_gem_tag  # noqa: E402
 from .lib.zip_utils import extract_and_upload  # noqa: E402
-from tender_search.constants import TENDER_FILE_TYPES  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent / "nic_automation" / "src"))
 from nic_automation.scraper import log, parse_results, tender_details  # noqa: E402
@@ -58,8 +57,7 @@ def _download(ref: str, portal: str, headless: bool) -> str | None:
 
 def _tag(key: str) -> str:
     """BOQ Excel -> boqComparativeChart, else tenderDocument (same BOQ rule as the non-GeM fetcher)."""
-    is_boq = _non_gem_tag(key) == BOQ_FILE
-    return TENDER_FILE_TYPES["BOQ_COMPARATIVE_CHART" if is_boq else "TENDER_DOCUMENT"]
+    return "boqComparativeChart" if _non_gem_tag(key) == BOQ_FILE else TENDER_DOCUMENT
 
 
 def fetch_nic(job, headless: bool | None = None) -> dict:

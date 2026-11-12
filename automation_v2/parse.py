@@ -16,7 +16,7 @@ from django.conf import settings
 
 from .lib import costing_excel_parse as costing
 from .lib.boq_parser import _is_direct_xlsx_zip, extract_zip, find_boq_file, parse_boq as parse_boq_rows
-from .lib.downloads import _download_from_drive, _download_from_url, _extract_drive_file_id, _resolve_network_path
+from .lib.downloads import _download_from_drive, _download_from_url, _resolve_network_path
 from .lib.gem_ra_pdf_parser import parse_ra_document
 from .lib.pdf_parser import parse_gem_pdf_service
 
@@ -33,7 +33,7 @@ def _workdir():
 
 
 def _download(link: str, dest: str) -> str:
-    file_id = _extract_drive_file_id(link)
+    file_id = costing._extract_drive_file_id(link) if costing._is_drive_link(link) else None
     if file_id:
         _download_from_drive(file_id, dest)
     elif link.startswith(("http://", "https://")):

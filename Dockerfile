@@ -33,6 +33,7 @@ FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
+    DJANGO_SETTINGS_MODULE=config.settings_v2 \
     CHROME_PATH=/usr/bin/chromium
 
 WORKDIR /app
@@ -48,4 +49,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app /app
 
 # Default worker
-CMD ["python", "manage.py", "consume_tender_tasks"]
+CMD ["python", "manage.py", "consume_tender_tasks_v2"]

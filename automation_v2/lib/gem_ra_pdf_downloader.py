@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search.
+"""No DB code.
 Search helpers come from gem_pdf_downloader; fetch.py reaches them through this module."""
 import os
 import re

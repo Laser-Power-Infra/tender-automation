@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import logging
 from pathlib import Path
 from playwright.sync_api import sync_playwright

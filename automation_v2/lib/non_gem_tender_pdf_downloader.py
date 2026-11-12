@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from django.conf import settings

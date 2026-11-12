@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import shutil
 import zipfile
 from pathlib import Path
@@ -24,7 +24,8 @@ def _extract_all_nested(zip_path: Path, dest_dir: Path, max_depth: int = 5):
         for nz in nested:
             try:
                 with zipfile.ZipFile(nz, 'r') as z:
-                    z.extractall(dest_dir)
+                    # own folder per inner zip: two inner zips holding the same file name must not overwrite each other
+                    z.extractall(nz.with_suffix(""))
                 nz.unlink()
             except Exception as e:
                 print(f"[ZipUtils] Failed nested {nz.name}: {e}")
@@ -59,16 +60,12 @@ def extract_and_upload(zip_path: str | Path, reference_no: str) -> list[dict]:
     except Exception:
         pass
     s3_list = []
-    for f in valid_files:
-        try:
+    try:
+        for f in valid_files:  # a failed upload fails the job: never report success with files missing
             rel = f.relative_to(extracted_dir).as_posix()
             s3_res = file_storage.upload(str(f), reference_no=reference_no, key=rel)
             s3_list.append(s3_res)
             print(f"[ZipUtils] S3 Uploaded: {s3_res['key']} — {s3_res['url']}")
-        except Exception as e:
-            print(f"[ZipUtils] S3 upload failed for {f.name}: {e}")
-    try:
+    finally:
         shutil.rmtree(extracted_dir, ignore_errors=True)
-    except Exception:
-        pass
     return s3_list

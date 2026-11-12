@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import csv
 import os
 import re
@@ -19,8 +19,8 @@ def extract_zip(zip_path: str, extract_to: str) -> list[str]:
 def find_boq_file(file_paths: list[str]) -> str | None:
     for fp in file_paths:
         fname = os.path.basename(fp)
-        name_no_ext = os.path.splitext(fname)[0]
-        if fnmatch.fnmatch(name_no_ext.upper(), "*BOQ*"):
+        name_no_ext, ext = os.path.splitext(fname)
+        if ext.lower() in (".xls", ".xlsx", ".csv") and fnmatch.fnmatch(name_no_ext.upper(), "*BOQ*"):
             return fp
     return None
 

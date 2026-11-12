@@ -44,4 +44,14 @@ try:
 except ValueError as e:
     assert "header row" in str(e)
 
+# the BOQ picker only takes spreadsheets, and Drive links are recognised with or without a trailing slash
+from automation_v2.lib.boq_parser import find_boq_file  # noqa: E402
+from automation_v2.lib.costing_excel_parse import _extract_drive_file_id  # noqa: E402
+
+assert find_boq_file(["/x/BOQ_notes.pdf", "/x/BOQ.xlsx"]) == "/x/BOQ.xlsx"
+assert find_boq_file(["/x/BOQ_notes.pdf", "/x/NIT.xlsx"]) is None
+assert _extract_drive_file_id("https://drive.google.com/file/d/ID1") == "ID1"
+assert _extract_drive_file_id("https://drive.google.com/file/d/ID1/view?usp=sharing") == "ID1"
+assert _extract_drive_file_id("https://drive.google.com/open?id=ID1") == "ID1"
+
 print("boq self-check OK")

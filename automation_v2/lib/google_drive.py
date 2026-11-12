@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import os
 import logging
 from google.oauth2.credentials import Credentials

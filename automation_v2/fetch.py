@@ -19,7 +19,7 @@ from .lib.tender_tiger import login_tiger
 
 logger = logging.getLogger(__name__)
 
-TENDER_DOCUMENT, BOQ_FILE = "tenderDocument", "BOQ_FILE"  # tag values from legacy tender_search/constants.py
+TENDER_DOCUMENT, BOQ_FILE = "tenderDocument", "BOQ_FILE"
 
 if hasattr(asyncio, "WindowsProactorEventLoopPolicy"):  # same as the legacy worker, for tender247 on Windows
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())

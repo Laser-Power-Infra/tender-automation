@@ -98,6 +98,9 @@ PAGE_FIELDS_JS = """() => {
 REQUIRED = ["Tender ID", "Work Description", "EMD Amount in ₹"]
 
 
+# wbtenders lists all of an org's tenders on one page (723 rows seen); this only matters if a portal pages them
+NEXT_PAGE = 'a#linkFwd, a:text-is("Next >")'
+MAX_PAGES = 1000  # guard against a pager that never ends
 ZIP_LINK = 'a:has-text("Download as zip file")'
 DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 CAPTCHA_TEXT = "#captchaText"
@@ -280,7 +283,16 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
                         finish(item)
                         done = ki
                         continue
-                    rows = parse_results(page)
+                    rows, pages = parse_results(page), 1
+                    while pages < MAX_PAGES and page.locator(NEXT_PAGE).count():  # same paging as the organisation flow
+                        page.locator(NEXT_PAGE).first.click()
+                        page.wait_for_load_state()
+                        known = {r["id"] for r in rows}
+                        more = [r for r in parse_results(page) if r["id"] not in known]
+                        if not more:  # a pager that still shows Next on its last page
+                            break
+                        rows += more
+                        pages += 1
                     fresh = [r for r in rows if r["published"] in dates]  # only tenders e-Published in the window
                     with seen_lock:  # shared across sub-categories: a tender found twice is opened once
                         new = [r for r in fresh if r["id"] not in seen]

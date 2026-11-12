@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import re
 from typing import Optional
 from playwright.sync_api import Page

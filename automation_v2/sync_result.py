@@ -6,6 +6,7 @@ One event per source, so `both` sends two events.
 import asyncio
 import logging
 import os
+import threading
 
 from django.conf import settings
 
@@ -13,6 +14,7 @@ from .dispatch import job_events
 from .lib import result_scrapers as rs
 
 logger = logging.getLogger(__name__)
+_run_lock = threading.Lock()  # one sync at a time: runs share the download file name and the portal login
 
 
 def _scrape(download, columns, email: str, password: str, name: str) -> dict:
@@ -50,10 +52,11 @@ def parse_sources(raw) -> list[str]:
 
 
 def run(client_id: str, sources: list[str]) -> None:
-    for source in sources:  # sequential, like legacy: two browsers at once clash on the event loop
-        type_, scrape = SOURCES[source]
-        try:
-            with job_events("result.synced", client_id, type=type_) as outcome:
-                outcome.succeed(scrape())
-        except Exception:
-            logger.exception("Result sync failed type=%s", type_)  # already reported as result.synced_failed
+    with _run_lock:
+        for source in sources:  # sequential, like legacy: two browsers at once clash on the event loop
+            type_, scrape = SOURCES[source]
+            try:
+                with job_events("result.synced", client_id, type=type_) as outcome:
+                    outcome.succeed(scrape())
+            except Exception:
+                logger.exception("Result sync failed type=%s", type_)  # already reported as result.synced_failed

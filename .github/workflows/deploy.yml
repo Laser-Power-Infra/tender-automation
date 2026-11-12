@@ -9,8 +9,25 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    name: Self-checks (no DB, no network, no browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - name: Run self-checks
+        env:
+          TENDER_PARSING_TEMP_DIR: /tmp/tender-parsing
+        run: |
+          for m in test_boq test_costing_materials test_dispatch test_nic_fetch test_nic_sync test_sync_result test_zip_utils; do
+            echo "== $m"
+            uv run python -m automation_v2.$m
+          done
+
   build-and-push:
     name: Build & Push Docker Image
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       short_sha: ${{ steps.vars.outputs.short_sha }}

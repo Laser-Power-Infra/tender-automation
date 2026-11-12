@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import boto3
 from pathlib import Path
 from urllib.parse import quote

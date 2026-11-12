@@ -1,4 +1,4 @@
-"""No DB code; used by both automation_v2 and tender_search.
+"""No DB code.
 delay and detect_chrome_path come from browser; fetch.py reaches them through this module."""
 import os
 import time

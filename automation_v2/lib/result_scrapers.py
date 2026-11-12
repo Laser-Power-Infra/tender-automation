@@ -1,4 +1,4 @@
-"""TenderTiger / Tender247 result Excel scrapers. No DB code; used by both automation_v2 and tender_search."""
+"""TenderTiger / Tender247 result Excel scrapers. No DB code."""
 import logging
 import re
 from pathlib import Path

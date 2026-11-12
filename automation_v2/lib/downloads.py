@@ -1,9 +1,8 @@
-"""No DB code; used by both automation_v2 and tender_search."""
+"""No DB code."""
 import os
 import re
 import requests
 from django.conf import settings
-DRIVE_FILE_ID_RE = re.compile(r"/file/d/([^/]+)/")
 FILE_SOURCE_BASE_PATH_ENV = {
     "network": "INDEXER_NETWORK_PATH",
     "costing": "COSTING_FILE_NETWORK_PATH",
@@ -29,16 +28,11 @@ def _resolve_network_path(decrypted_file_id: str) -> str:
     return os.path.join(base_path, relative_path)
 
 
-def _extract_drive_file_id(url: str) -> str | None:
-    m = DRIVE_FILE_ID_RE.search(url)
-    return m.group(1) if m else None
-
-
 def _download_from_drive(file_id: str, dest_path: str) -> bool:
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
     session = requests.Session()
 
-    response = session.get(url, stream=True)
+    response = session.get(url, stream=True, timeout=60)
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")
@@ -49,10 +43,10 @@ def _download_from_drive(file_id: str, dest_path: str) -> bool:
         if m:
             confirm_token = m.group(1)
             url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
-            response = session.get(url, stream=True)
+            response = session.get(url, stream=True, timeout=60)
             response.raise_for_status()
         else:
-            response = session.get(url, stream=True)
+            response = session.get(url, stream=True, timeout=60)
             response.raise_for_status()
 
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
