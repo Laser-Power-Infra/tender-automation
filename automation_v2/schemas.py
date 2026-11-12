@@ -35,8 +35,9 @@ class CostingParseJob(BaseModel):
 
 
 class SyncJob(BaseModel):
-    """NIC scrape job from V2_SYNC_QUEUE: {"client_id": ..., "portals": ["https://etender.up.nic.in", ...]}."""
+    """NIC scrape job from V2_SYNC_QUEUE: {"client_id": ..., "portals": ["https://etender.up.nic.in", ...], "days": 2}."""
     portals: list[Annotated[str, Field(pattern=r"^https?://")]] = Field(min_length=1)
+    days: int = Field(default=0, ge=0)  # older days to include besides today; missing/0 = today only
 
 
 fetch_adapter = TypeAdapter(Annotated[Union[FetchJob, NicFetchJob], Field(discriminator="type")])

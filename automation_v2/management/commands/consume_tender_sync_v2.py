@@ -23,11 +23,11 @@ def on_message(ch, method, _properties, body: bytes) -> None:
         logger.exception("Bad sync job dropped: %r", body[:200])  # no valid client_id/portals: nobody to notify
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
-    logger.info("Sync start client_id=%s portals=%s", client_id, job.portals)
+    logger.info("Sync start client_id=%s portals=%s days=%s", client_id, job.portals, job.days)
     try:
         # the scrape runs in a thread so heartbeats keep going; ack after it, so prefetch=1 holds the next job back.
         # A worker killed mid-scrape gets the job redelivered (keywords already sent are sent again).
-        run_keeping_alive(ch.connection, lambda: nic_sync.run(client_id, job.portals))
+        run_keeping_alive(ch.connection, lambda: nic_sync.run(client_id, job.portals, job.days))
         logger.info("Sync done client_id=%s", client_id)
     except Exception:
         logger.exception("Sync failed client_id=%s", client_id)

@@ -17,8 +17,8 @@ from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
 from nic_automation.captcha_decoder import _model
-from nic_automation.scraper import (_finish, _local, _use_v2_lib, log, published_col, published_date, tender_details,
-                                    today_ist)
+from nic_automation.scraper import (_finish, _local, _use_v2_lib, log, published_col, published_date, published_window,
+                                    tender_details, window_label)
 
 ORG_LINK = 'a[title="Tenders by Organisation"]'
 # wbtenders lists all of an org's tenders on one page (723 rows seen); this only matters if a portal pages them
@@ -46,8 +46,8 @@ def _organisations(page) -> list[tuple[str, str]]:
     return orgs
 
 
-def _untitled_rows(page, today) -> list[dict]:
-    """Untitled tenders e-Published on `today` on the current list page: {"id", "ref", "href"}."""
+def _untitled_rows(page, dates) -> list[dict]:
+    """Untitled tenders e-Published on one of `dates` on the current list page: {"id", "ref", "href"}."""
     rows = []
     col = published_col(page)
     for tr in page.locator("#table tr.even, #table tr.odd").all():
@@ -55,7 +55,7 @@ def _untitled_rows(page, today) -> list[dict]:
         tds = tr.locator("td")
         if not link.count() or tds.count() <= max(col, 4):
             continue
-        if published_date(tds.nth(col).inner_text()) != today:
+        if published_date(tds.nth(col).inner_text()) not in dates:
             continue
         title = link.first.inner_text()
         rest = tds.nth(4).inner_text().replace(title, "")
@@ -66,7 +66,7 @@ def _untitled_rows(page, today) -> list[dict]:
     return rows
 
 
-def scrape_untitled(portal: str, headless: bool = False, on_org=None) -> list[dict]:
+def scrape_untitled(portal: str, headless: bool = False, on_org=None, days: int = 0) -> list[dict]:
     """One item per organisation with untitled tenders (or an error): {portal, organisation, tenders, error}.
     Portal-level failure -> a single item with organisation None. `on_org(item)` is called as each finishes."""
     _use_v2_lib()
@@ -75,8 +75,8 @@ def scrape_untitled(portal: str, headless: bool = False, on_org=None) -> list[di
     host = urlparse(portal).netloc
     _local.ctx = f"[{host}] [by organisation]"
     started = time.monotonic()
-    today = today_ist()  # each run picks the tenders e-Published on the day it runs
-    log(f"e-Published {today:%d-%b-%Y} only")
+    dates = published_window(days)  # today, plus `days` older days when the job asks for them
+    log(f"e-Published {window_label(dates)} only")
     items, seen = [], set()
     any_zip = False
 
@@ -113,13 +113,13 @@ def scrape_untitled(portal: str, headless: bool = False, on_org=None) -> list[di
                     rows, pages = [], 0
                     while pages < MAX_PAGES:
                         pages += 1
-                        rows += [r for r in _untitled_rows(page, today) if r["id"] not in seen]
+                        rows += [r for r in _untitled_rows(page, dates) if r["id"] not in seen]
                         nxt = page.locator(NEXT_PAGE)
                         if not nxt.count():
                             break
                         nxt.first.click()
                         page.wait_for_load_state()
-                    log(f"{pages} list page(s), {len(rows)} untitled tender(s) published {today:%d-%b-%Y}")
+                    log(f"{pages} list page(s), {len(rows)} untitled tender(s) published {window_label(dates)}")
                     for ti, row in enumerate(rows, 1):
                         seen.add(row["id"])
                         log(f"tender {ti}/{len(rows)} {row['id']} ({row['ref']}): opening")

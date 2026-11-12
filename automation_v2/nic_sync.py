@@ -31,14 +31,16 @@ def _send(client_id: str, items: list[dict], label: str) -> None:
                 outcome.succeed(it["tenders"])
 
 
-def run(client_id: str, portals: list[str]) -> None:
+def run(client_id: str, portals: list[str], days: int = 0) -> None:
+    """`days`: older days to include besides today (0 = tenders e-Published today only), for both flows."""
     # Same design as fetch.py / sync_result.py: the webhook goes out after the browser is closed.
     # Inside sync_playwright the thread runs an asyncio loop, and Django refuses DB queries (the webhook
     # lookup) there with SynchronousOnlyOperation. So: scrape one portal, close its browser, send its results.
     for portal in portals:
-        for flow, label, step in (("keywords", "keyword", lambda: scrape([portal], headless=settings.HEADLESS_BROWSER)),
+        for flow, label, step in (("keywords", "keyword",
+                                   lambda: scrape([portal], headless=settings.HEADLESS_BROWSER, days=days)),
                                   ("by organisation", "organisation",
-                                   lambda: scrape_untitled(portal, headless=settings.HEADLESS_BROWSER))):
+                                   lambda: scrape_untitled(portal, headless=settings.HEADLESS_BROWSER, days=days))):
             try:
                 items = step()
             except Exception as e:  # browser crash etc.: report it for this portal and go on

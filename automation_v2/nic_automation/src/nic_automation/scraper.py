@@ -36,6 +36,17 @@ def today_ist() -> date:
     return datetime.now(IST).date()
 
 
+def published_window(days: int = 0, today: date | None = None) -> set[date]:
+    """Today (IST) and the `days` days before it: the e-Published dates a run keeps."""
+    today = today or today_ist()
+    return {today - timedelta(days=d) for d in range(days + 1)}
+
+
+def window_label(dates: set[date]) -> str:
+    lo, hi = min(dates), max(dates)
+    return f"{hi:%d-%b-%Y}" if lo == hi else f"{lo:%d-%b-%Y} .. {hi:%d-%b-%Y}"
+
+
 def published_date(text: str) -> date | None:
     """Date part of an e-Published Date cell like "10-Nov-2026 02:15 PM"; None if it can't be read."""
     try:
@@ -68,6 +79,9 @@ def parse_results(page):
 assert published_date("10-Nov-2026 02:15 PM") == date(2026, 11, 10)
 assert published_date(" 06-Nov-2026 05:15 PM ") == date(2026, 11, 6)
 assert published_date("") is None and published_date("NA") is None
+assert published_window(2, date(2026, 11, 12)) == {date(2026, 11, 12), date(2026, 11, 11), date(2026, 11, 10)}
+assert published_window(0, date(2026, 11, 12)) == {date(2026, 11, 12)}
+assert window_label(published_window(2, date(2026, 11, 12))) == "10-Nov-2026 .. 12-Nov-2026"
 
 
 # every "label | value" pair of the page, keyed by the page's own label; nested tables (documents) are skipped
@@ -223,7 +237,7 @@ def _finish(tender, extract_and_upload) -> None:
     tender.pop("id", None)
 
 
-def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, finish, today) -> None:
+def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, finish, dates) -> None:
     """One sub-category's keywords on one portal, in this thread's own browser (Playwright objects are per thread).
     Fills each item of `group` in place; a browser crash marks the unfinished items failed instead of raising."""
     host = urlparse(portal).netloc
@@ -267,11 +281,11 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
                         done = ki
                         continue
                     rows = parse_results(page)
-                    fresh = [r for r in rows if r["published"] == today]  # only tenders e-Published today
+                    fresh = [r for r in rows if r["published"] in dates]  # only tenders e-Published in the window
                     with seen_lock:  # shared across sub-categories: a tender found twice is opened once
                         new = [r for r in fresh if r["id"] not in seen]
                         seen.update(r["id"] for r in new)
-                    log(f"{len(rows)} result rows ({len(fresh)} published {today:%d-%b-%Y}, {len(new)} new)")
+                    log(f"{len(rows)} result rows ({len(fresh)} published {window_label(dates)}, {len(new)} new)")
                     for ti, row in enumerate(new, 1):
                         log(f"tender {ti}/{len(new)} {row['id']}: opening")
                         details = tender_details(context, row["href"], row["id"])
@@ -312,7 +326,7 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
 
 
 def scrape(portals: list[str], only_keyword: str | None = None, headless: bool = False,
-           on_keyword=None) -> list[dict]:
+           on_keyword=None, days: int = 0) -> list[dict]:
     """One item per (portal, keyword) searched: {portal, category, sub_category, keyword, tenders, error}.
     Per portal, every sub-category runs at the same time in its own browser; portals run one after another.
     `on_keyword(item)` is called (from a worker thread) as soon as each keyword is finished (uploads done).
@@ -327,8 +341,8 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
                 for sub, cfg in subs.items() for keyword in cfg["keywords"]
                 if not only_keyword or keyword.lower() == only_keyword.lower()]
     started = time.monotonic()
-    today = today_ist()  # each run picks the tenders e-Published on the day it runs
-    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s), e-Published {today:%d-%b-%Y} only")
+    dates = published_window(days)  # today, plus `days` older days when the job asks for them
+    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s), e-Published {window_label(dates)} only")
 
     def finish(item) -> None:
         if on_keyword:
@@ -344,7 +358,7 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
         log(f"portal {pi}/{len(portals)} {portal}: {len(groups)} sub-categories in parallel")
         with ThreadPoolExecutor(max_workers=max(len(groups), 1)) as pool:
             futures = [pool.submit(_scrape_group, portal, g, seen, seen_lock, headless, extract_and_upload, finish,
-                                   today) for g in groups.values()]
+                                   dates) for g in groups.values()]
             for f in futures:
                 f.result()
     results = [t for i in items for t in i["tenders"]]

@@ -36,8 +36,12 @@ def emit(cid, event, data):
 dispatch.emit = emit
 
 
-def fake_scrape(portals, headless):
+days_seen = []  # (flow, days) each scrape was given
+
+
+def fake_scrape(portals, headless, days):
     global scraping
+    days_seen.append(("keywords", days))
     scraping = True
     try:
         if portals == ["https://dead.example.in"]:
@@ -52,9 +56,10 @@ untitled = {"Tender ID": "2026_X_9", "organisation": "Agra Development Authority
 flows = []
 
 
-def fake_untitled(portal, headless):
+def fake_untitled(portal, headless, days):
     global scraping
     flows.append(("org", portal))
+    days_seen.append(("org", days))
     scraping = True
     try:
         if portal == "https://dead.example.in":
@@ -82,9 +87,17 @@ assert sent[0][2] == {"type": "NIC_SYNC", "portal": "https://dead.example.in", "
                       "error": "RuntimeError: browser died"}
 assert sent[1][2]["error"] == "RuntimeError: org page died"
 
+# days: default 0 (today only), and a job's days reach both flows
+assert days_seen and all(d == 0 for _, d in days_seen), days_seen
+days_seen.clear()
+nic_sync.run("whk_test", [P], 2)
+assert days_seen == [("keywords", 2), ("org", 2)], days_seen
+
 # payload validation
 assert sync_adapter.validate_python({"client_id": "whk_x", "portals": [P]}).portals == [P]
-for bad in ({"portals": []}, {"portals": ["etender.up.nic.in"]}, {}):
+assert sync_adapter.validate_python({"portals": [P]}).days == 0
+assert sync_adapter.validate_python({"portals": [P], "days": 2}).days == 2
+for bad in ({"portals": []}, {"portals": ["etender.up.nic.in"]}, {}, {"portals": [P], "days": -1}):
     try:
         sync_adapter.validate_python(bad)
         raise AssertionError(f"should reject {bad}")
