@@ -3,7 +3,8 @@
 
 Search `portal` for referenceNo in the same search box the keyword scrape uses, download the tender's zip
 (same captcha flow), unzip and upload every file to S3. The worker sends the files as file.fetched_success
-to client_id. Not found / no documents -> Requeue: back to the end of the queue.
+to client_id. Not found / no documents -> Requeue: back to the end of the queue, up to 5 times
+(consume.MAX_REQUEUES), then file.fetched_failed.
 
 Manual run (prints the S3 links, no webhook, no queue):
   uv run python -m automation_v2.nic_fetch <portal> <referenceNo> [<referenceNo> ...]

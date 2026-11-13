@@ -11,9 +11,12 @@ import threading
 import pika
 from django.conf import settings
 
+from . import dispatch
 from .dispatch import Requeue, client_id_from, job_events
 
 logger = logging.getLogger(__name__)
+
+MAX_REQUEUES = 5  # a job that raised Requeue is tried 1 + 5 times, then reported as failed
 
 
 def get_channel(queue: str):
@@ -73,9 +76,16 @@ def handle(ch, method, body: bytes, base: str, adapter, handlers: dict) -> None:
         run_keeping_alive(ch.connection, work)
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Requeue as e:
-        # shortcut: no retry limit (user's choice); a job that never succeeds cycles through the queue forever
-        logger.info("Job requeued to the end of %s: %s payload=%s", method.routing_key, e, raw)
-        ch.basic_publish("", method.routing_key, body, pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        retries = raw.get("retries", 0)  # the count travels in the message; the job schemas ignore unknown keys
+        if not isinstance(retries, int) or retries >= MAX_REQUEUES:
+            logger.info("Job gave up after %s retries: %s payload=%s", retries, e, raw)
+            dispatch.emit(client_id_from(raw), f"{base}_failed",
+                          {**ids, "result": None, "error": f"{e} (gave up after {retries} retries)"})
+        else:
+            logger.info("Job requeued (retry %s/%s) to the end of %s: %s payload=%s",
+                        retries + 1, MAX_REQUEUES, method.routing_key, e, raw)
+            ch.basic_publish("", method.routing_key, json.dumps({**raw, "retries": retries + 1}),
+                             pika.BasicProperties(delivery_mode=2, content_type="application/json"))
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception:
         # ponytail: nack without requeue or DLX drops the message, same as legacy; add a DLX if replay matters

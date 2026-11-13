@@ -51,11 +51,23 @@ def not_found(job):
     raise Requeue("not found")
 
 
-# documents not got: same message to the end of the same queue, acked, no webhook
+# documents not got: same message plus a retry count to the end of the same queue, acked, no webhook
 ch = Ch()
 consume.handle(ch, Method, body, "file.fetched", fetch_adapter, {"NIC_DOWNLOAD": not_found})
-assert ch.published == [("", "automation-v2:tasks", body)] and ch.acked == [7] and not ch.nacked, vars(ch)
+(ex, key, again), = ch.published
+assert (ex, key) == ("", "automation-v2:tasks") and ch.acked == [7] and not ch.nacked, vars(ch)
+assert json.loads(again) == {**json.loads(body), "retries": 1}, again
 assert sent == [], sent
+
+# still not found after the 5th retry: nothing republished, one failed webhook, acked
+ch = Ch()
+last = json.dumps({**json.loads(body), "retries": consume.MAX_REQUEUES}).encode()
+consume.handle(ch, Method, last, "file.fetched", fetch_adapter, {"NIC_DOWNLOAD": not_found})
+assert ch.published == [] and ch.acked == [7] and not ch.nacked, vars(ch)
+assert sent == [("whk_test", "file.fetched_failed", {
+    "type": "NIC_DOWNLOAD", "referenceNo": "2026_X_1", "portal": P, "result": None,
+    "error": "not found (gave up after 5 retries)"})], sent
+sent.clear()
 
 # got them: one file.fetched_success to client_id, acked, nothing republished
 ch = Ch()
