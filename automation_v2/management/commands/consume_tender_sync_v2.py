@@ -39,6 +39,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        # one webhook per keyword: ~150 "Webhook sent" lines per website would bury the scrape log; failures still print
+        logging.getLogger("automation_v2.dispatch").setLevel(logging.WARNING)
         channel = get_channel(settings.V2_SYNC_QUEUE)
         channel.basic_qos(prefetch_count=1)
         channel.basic_consume(queue=settings.V2_SYNC_QUEUE, on_message_callback=on_message)

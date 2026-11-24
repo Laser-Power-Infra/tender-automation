@@ -104,4 +104,26 @@ for bad in ({"portals": []}, {"portals": ["etender.up.nic.in"]}, {}, {"portals":
     except ValueError:
         pass
 
+# log layout: one block per search that found tenders, then the per-website table by category
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import re  # noqa: E402
+
+from nic_automation.scraper import log_block, log_summary  # noqa: E402  (nic_sync put its folder on sys.path)
+
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    log_block("EPC > Cable", [
+        {"reference_no": "2026_X_1", "Tenders Documents": [{"name": "BOQ.xls", "url": "https://s3/x"}]},
+        {"reference_no": "2026_X_2", "Tenders Documents": []}])
+    log_summary(P, ITEMS, [{"portal": P, "organisation": "Agra", "tenders": [untitled], "error": None}],
+                "24-Nov-2026", 1.5, ["by organisation: scrape crashed: X"])
+text = out.getvalue()
+assert ("  EPC > Cable\n    2 tenders found\n    2026_X_1   1 file\n        BOQ.xls   https://s3/x\n"
+        "    2026_X_2   NO FILES (") in text, text
+assert "  etender.up.nic.in  SUMMARY  24-Nov-2026  (1.5 min)\n" in text, text
+for row in (r"Manufacturing\s+1 kw\s+1\s+1\n", r"EPC\s+1 kw\s+0\s+0\n", r"UNTITLED\s+-\s+1\s+1\n", r"TOTAL\s+2\s+2\n"):
+    assert re.search(row, text), (row, text)
+assert "Errors: 2\n        EPC > Solar PV: no result table (search captcha?)\n" in text, text
+
 print("ok")

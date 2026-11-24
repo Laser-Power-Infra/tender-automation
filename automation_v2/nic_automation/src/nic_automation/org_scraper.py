@@ -17,8 +17,9 @@ from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
 from nic_automation.captcha_decoder import _model
-from nic_automation.scraper import (MAX_PAGES, NEXT_PAGE, _finish, _local, _use_v2_lib, log, published_col,
-                                    published_date, published_window, tender_details, window_label)
+from nic_automation.scraper import (MAX_PAGES, NEXT_PAGE, ORGS_SEARCHED, _finish, _local, _problem, _use_v2_lib, log,
+                                    log_block, log_summary, progress, published_col, published_date,
+                                    published_window, tender_details, window_label)
 
 ORG_LINK = 'a[title="Tenders by Organisation"]'
 
@@ -43,15 +44,14 @@ def _organisations(page) -> list[tuple[str, str]]:
     return orgs
 
 
-def _untitled_rows(page, dates, page_no: int = 1) -> list[dict]:
+def _untitled_rows(page, dates, name: str = "") -> list[dict]:
     """Untitled tenders e-Published on one of `dates` on the current list page: {"id", "ref", "href"}."""
     rows = []
     col = published_col(page)
     trs = page.locator("#table tr.even, #table tr.odd").all()
-    log(f"list page {page_no}: reading {len(trs)} row(s)")  # a big list takes minutes: show it is not stuck
     for i, tr in enumerate(trs):
-        if i and i % 500 == 0:
-            log(f"list page {page_no}: {i}/{len(trs)} rows read, {len(rows)} untitled so far")
+        if i and i % 500 == 0:  # a big list takes minutes: show it is not stuck
+            log(f"UNTITLED > {name}: reading a big list, {i}/{len(trs)} rows, {len(rows)} untitled so far")
         link = tr.locator("a[title='View Tender Information']")
         tds = tr.locator("td")
         if not link.count() or tds.count() <= max(col, 4):
@@ -64,7 +64,6 @@ def _untitled_rows(page, dates, page_no: int = 1) -> list[dict]:
         if len(refs) >= 2 and is_untitled(title, refs[-2]):
             rows.append({"id": refs[-1].strip(), "ref": refs[-2].strip(),
                          "href": urljoin(page.url, link.first.get_attribute("href"))})
-            log(f"found untitled tender {rows[-1]['id']} ({rows[-1]['ref']})")
     return rows
 
 
@@ -75,10 +74,8 @@ def scrape_untitled(portal: str, headless: bool = False, on_org=None, days: int 
     from automation_v2.lib.zip_utils import extract_and_upload
     _model()
     host = urlparse(portal).netloc
-    _local.ctx = f"[{host}] [by organisation]"
-    started = time.monotonic()
+    _local.ctx = host
     dates = published_window(days)  # today, plus `days` older days when the job asks for them
-    log(f"e-Published {window_label(dates)} only")
     items, seen = [], set()
     any_zip = False
 
@@ -101,31 +98,27 @@ def scrape_untitled(portal: str, headless: bool = False, on_org=None, days: int 
                 orgs = _organisations(page)
             except Exception as e:
                 err = f"no 'Tenders by Organisation' list: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
-                log(f"ERROR {err}")
+                log(f"ERROR UNTITLED: {err}")
                 finish({"portal": portal, "organisation": None, "tenders": [], "error": err})
                 browser.close()
                 return items
-            log(f"{len(orgs)} organisations")
+            ORGS_SEARCHED[portal] = len(orgs)
             for oi, (name, href) in enumerate(orgs, 1):
-                _local.ctx = f"[{host}] [org {oi}/{len(orgs)} '{name}']"
                 item = {"portal": portal, "organisation": name, "tenders": [], "error": None}
                 try:
-                    log("opening tender list")
                     page.goto(href)
                     page.wait_for_load_state()
                     rows, pages = [], 0
                     while pages < MAX_PAGES:
                         pages += 1
-                        rows += [r for r in _untitled_rows(page, dates, pages) if r["id"] not in seen]
+                        rows += [r for r in _untitled_rows(page, dates, name) if r["id"] not in seen]
                         nxt = page.locator(NEXT_PAGE)
                         if not nxt.count():
                             break
                         nxt.first.click()
                         page.wait_for_load_state()
-                    log(f"{pages} list page(s), {len(rows)} untitled tender(s) published {window_label(dates)}")
-                    for ti, row in enumerate(rows, 1):
+                    for row in rows:
                         seen.add(row["id"])
-                        log(f"tender {ti}/{len(rows)} {row['id']} ({row['ref']}): opening")
                         details = tender_details(context, row["href"], row["id"])
                         if details is None:
                             continue
@@ -135,27 +128,28 @@ def scrape_untitled(portal: str, headless: bool = False, on_org=None, days: int 
                                                 **details})
                 except Exception as e:  # keep what was collected; go on with the next organisation
                     item["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
-                    log(f"ERROR {item['error']} ({len(item['tenders'])} tenders kept)")
+                    log(f"ERROR UNTITLED > {name}: {item['error']} ({len(item['tenders'])} tenders kept)")
                 for tender in [t for t in item["tenders"] if not t["zip_path"]] if any_zip else []:
                     try:  # once one captcha passed, the session usually downloads without one
                         details = tender_details(context, tender["href"], tender.get("Tender ID") or tender["id"])
                         if details:
                             tender["zip_path"] = details["zip_path"]
                     except Exception as e:
-                        log(f"WARNING [{tender['id']}] retry failed: {e}")
+                        _problem(tender.get("Tender ID") or tender["id"], f"retry failed: {type(e).__name__}")
                 for tender in item["tenders"]:
                     _finish(tender, extract_and_upload)
+                if item["tenders"]:
+                    log_block(f"UNTITLED > {name}", item["tenders"])
                 if item["tenders"] or item["error"]:
                     finish(item)
+                progress(f"{oi}/{len(orgs)} organisations, {sum(len(i['tenders']) for i in items)} untitled tenders")
             browser.close()
     except Exception as e:  # browser crash: report it once for the portal
         err = f"browser crashed: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
-        log(f"ERROR {err}")
+        log(f"ERROR UNTITLED: {err}")
         finish({"portal": portal, "organisation": None, "tenders": [], "error": err})
     finally:
         _local.ctx = ""
-    log(f"by organisation done in {(time.monotonic() - started) / 60:.1f}m: "
-        f"{sum(len(i['tenders']) for i in items)} untitled tenders in {len(items)} organisation(s)")
     return items
 
 
@@ -177,4 +171,6 @@ if __name__ == "__main__":
             print(json.dumps({"organisation": t["organisation"], "Tender ID": t.get("Tender ID"),
                               "documents": [d["url"] for d in t["Tenders Documents"]]}, ensure_ascii=False), flush=True)
 
-    scrape_untitled(sys.argv[1], headless=os.environ.get("HEADLESS", "1") != "0", on_org=show)
+    started = time.monotonic()
+    found = scrape_untitled(sys.argv[1], headless=os.environ.get("HEADLESS", "1") != "0", on_org=show)
+    log_summary(sys.argv[1], [], found, window_label(published_window()), (time.monotonic() - started) / 60)

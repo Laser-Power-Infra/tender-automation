@@ -23,7 +23,7 @@ from .fetch import BOQ_FILE, TENDER_DOCUMENT, _file, _non_gem_tag  # noqa: E402
 from .lib.zip_utils import extract_and_upload  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent / "nic_automation" / "src"))
-from nic_automation.scraper import log, parse_results, tender_details  # noqa: E402
+from nic_automation.scraper import log, parse_results, tender_details, why_no_files  # noqa: E402
 
 
 def _download(ref: str, portal: str, headless: bool) -> str | None:
@@ -48,7 +48,7 @@ def _download(ref: str, portal: str, headless: bool) -> str | None:
                 details = tender_details(context, row["href"], row["id"])
                 if details and details["zip_path"]:
                     return details["zip_path"]
-                log(f"[{ref}] found on {portal} but no documents")
+                log(f"[{ref}] found on {portal} but no documents ({why_no_files(ref) or 'excluded, or no zip'})")
             except Exception as e:  # portal down / page changed: retried later like "not found"
                 log(f"[{ref}] {portal}: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}")
         finally:

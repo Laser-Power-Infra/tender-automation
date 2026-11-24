@@ -16,12 +16,82 @@ from nic_automation.captcha_decoder import _model, fix_case, solve_candidates
 from nic_automation.target_websites import CATEGORY_CONFIG, EXCLUSION_KEYWORDS, website
 
 
-# per thread: "[wbtenders.gov.in] [EPC/Distribution 12/40 'PSS']", set per keyword so every line says where it is
+# per thread: ctx = the website being scraped ("wbtenders.gov.in"), problems = {tender id: why it has no files}
 _local = threading.local()
+_progress_lock = threading.Lock()
+_progress_at = {}   # website -> time of its last progress line
+ORGS_SEARCHED = {}  # portal -> organisations walked by org_scraper, for the summary
 
 
 def log(msg: str) -> None:
-    print(f"{datetime.now():%H:%M:%S} {getattr(_local, 'ctx', '')} {msg}".replace("  ", " "), flush=True)
+    """`date time  website  msg` in one write, so parallel browsers cannot mix up a multi-line block."""
+    parts = (f"{datetime.now():%Y-%m-%d %H:%M:%S}", getattr(_local, "ctx", ""), msg)
+    sys.stdout.write("  ".join(p for p in parts if p) + "\n")
+    sys.stdout.flush()
+
+
+def _problem(tender_id: str, why: str) -> None:
+    """Remember why a tender has no files; log_block shows it next to the tender instead of a separate line."""
+    if not hasattr(_local, "problems"):
+        _local.problems = {}
+    _local.problems[tender_id] = why
+
+
+def why_no_files(tender_id: str) -> str | None:
+    return getattr(_local, "problems", {}).pop(tender_id, None)
+
+
+def progress(text: str, every: int = 300) -> None:
+    """At most one line per website every `every` seconds: shows the job is alive while nothing is found."""
+    host, now = getattr(_local, "ctx", ""), time.monotonic()
+    with _progress_lock:
+        if now - _progress_at.setdefault(host, now) < every:
+            return
+        _progress_at[host] = now
+    log(f"progress: {text}")
+
+
+def log_block(where: str, tenders: list[dict]) -> None:
+    """One block per keyword / organisation that found tenders: each tender with its files and links."""
+    lines = [where, f"    {len(tenders)} tender{'' if len(tenders) == 1 else 's'} found"]
+    for t in tenders:
+        ref, docs = t["reference_no"], t["Tenders Documents"]
+        why = why_no_files(ref) or "no listed document was in the zip"
+        lines.append(f"    {ref}   {len(docs)} file{'' if len(docs) == 1 else 's'}" if docs
+                     else f"    {ref}   NO FILES ({why})")
+        width = max((len(d["name"]) for d in docs), default=0)
+        lines += [f"        {d['name']:<{width}}   {d['url']}" for d in docs]
+    log("\n".join(lines) + "\n")
+
+
+def log_summary(portal: str, keyword_items: list[dict], org_items: list[dict], window: str, minutes: float,
+                crashed: list[str] = ()) -> None:
+    """Per website: tenders found per category, one UNTITLED row for the organisation flow, then every error."""
+    def counts(items):
+        tenders = [t for i in items for t in i["tenders"]]
+        return len(tenders), sum(1 for t in tenders if t["Tenders Documents"])
+
+    by_cat = {}
+    for it in keyword_items:
+        by_cat.setdefault(it["category"], []).append(it)
+    rows = [(cat, f"{len(its)} kw", *counts(its)) for cat, its in by_cat.items()]
+    orgs = ORGS_SEARCHED.get(portal)
+    rows.append(("UNTITLED", "-" if orgs is None else f"{orgs} orgs", *counts(org_items)))
+    rows.append(("TOTAL", "", sum(r[2] for r in rows), sum(r[3] for r in rows)))
+    errors = [f"{i['category']} > {i['keyword']}: {i['error']}" for i in keyword_items if i["error"]]
+    errors += [f"UNTITLED > {i['organisation'] or 'website'}: {i['error']}" for i in org_items if i["error"]]
+    errors += list(crashed)
+    w = max(len(r[0]) for r in rows) + 3
+    lines = [f"SUMMARY  {window}  ({minutes:.1f} min)",
+             f"    {'Category':<{w}}{'Searched':<10}{'Tenders':>8}{'With files':>13}"]
+    lines += [f"    {c:<{w}}{s:<10}{t:>8}{f:>13}" for c, s, t, f in rows]
+    if errors:
+        lines += [f"    Errors: {len(errors)}"] + [f"        {e}" for e in errors]
+    _local.ctx = urlparse(portal).netloc
+    try:
+        log("\n".join(lines) + "\n")
+    finally:
+        _local.ctx = ""
 
 
 def is_excluded(text: str) -> bool:
@@ -139,12 +209,10 @@ def _auto_captcha(tab, tender_id, tries=CAPTCHA_TRIES):
         image, src = _captcha_image(tab)
         text = next((t for t in solve_candidates(image) if len(t) == 6), None)
         if text is None:
-            log(f"[{tender_id}] captcha: unreadable, refreshing")
             _refresh_captcha(tab, src)
             continue
         text = str(fix_case(text, image))
         submitted += 1
-        log(f"[{tender_id}] captcha attempt {submitted}/{tries}: {text}")
         tab.fill(CAPTCHA_TEXT, text)
         tab.click(CAPTCHA_SUBMIT)
         tab.wait_for_load_state()
@@ -161,12 +229,12 @@ def download_zip(tab, tender_id):
     try:
         link.wait_for(timeout=15_000)
     except PlaywrightTimeoutError:
-        log(f"WARNING [{tender_id}] no zip link on the page")
+        _problem(tender_id, "no zip link on the page")
         return None
     if "sp=" not in (link.get_attribute("href") or ""):
         link.click()
         if not _auto_captcha(tab, tender_id):
-            log(f"WARNING [{tender_id}] captcha not solved, sent without documents")
+            _problem(tender_id, "captcha not solved")
             return None
     link = tab.locator(f'{ZIP_LINK}[href*="sp="]').first
     with tab.expect_download() as dl:
@@ -174,7 +242,6 @@ def download_zip(tab, tender_id):
     DOWNLOAD_DIR.mkdir(exist_ok=True)
     path = DOWNLOAD_DIR / f"{tender_id}.zip"
     dl.value.save_as(path)
-    log(f"[{tender_id}] zip downloaded")
     return str(path)
 
 
@@ -203,9 +270,8 @@ def tender_details(context, href, tender_id):
         details["Tenders Documents"] = docs
         missing = [k for k in REQUIRED if not details.get(k)]
         if missing:
-            log(f"WARNING [{tender_id}] page missing {missing}")
+            log(f"WARNING {tender_id}: page missing {missing}")
         if is_excluded(details.get("Work Description", "")):
-            log(f"[{tender_id}] excluded (Work Description matches exclusion list)")
             return None
         details["zip_path"] = download_zip(tab, details.get("Tender ID") or tender_id)
         return details
@@ -226,11 +292,10 @@ def _finish(tender, extract_and_upload) -> None:
     zip_path = tender.pop("zip_path")
     s3_list = []
     if zip_path:
-        log(f"[{reference_no}] uploading zip")
         try:
             s3_list = extract_and_upload(zip_path, reference_no)
         except Exception as e:
-            log(f"ERROR [{reference_no}] extract/upload failed: {e}")
+            _problem(reference_no, f"upload failed: {e}")
     urls = {x["key"].rsplit("/", 1)[-1]: x["url"] for x in s3_list}  # file name -> link
     for doc in tender["Tenders Documents"]:
         doc["url"] = urls.get(doc["name"])
@@ -245,7 +310,7 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
     Fills each item of `group` in place; a browser crash marks the unfinished items failed instead of raising."""
     host = urlparse(portal).netloc
     label = f"{group[0]['category']}/{group[0]['sub_category']}"
-    _local.ctx = f"[{host}] [{label}]"
+    _local.ctx = host
     done = 0
     try:
         chrome = os.environ.get("CHROME_PATH")  # the Docker image ships /usr/bin/chromium, not Playwright's build
@@ -258,7 +323,7 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
                 page.goto(portal)
                 page.wait_for_selector("#SearchDescription", timeout=30_000)
             except Exception as e:
-                log(f"ERROR portal skipped: {type(e).__name__}: {str(e).splitlines()[0]}")
+                log(f"ERROR {label}: portal skipped: {type(e).__name__}: {str(e).splitlines()[0]}")
                 for item in group:
                     item["error"] = f"portal unreachable / not a NIC search page: {type(e).__name__}"
                     finish(item)
@@ -267,19 +332,16 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
             any_zip = False  # once one captcha passed, the session carries sp= and later zips download without a captcha
             for ki, item in enumerate(group, 1):
                 keyword = item["keyword"]
-                _local.ctx = f"[{host}] [{label} {ki}/{len(group)} '{keyword}']"
+                where = f"{item['category']} > {keyword}"
                 try:
-                    log("searching...")
                     page.goto(portal)
                     page.fill("#SearchDescription", keyword)
                     page.press("#SearchDescription", "Enter")
                     page.wait_for_load_state()
                     if page.locator("#table").count() == 0:
-                        if page.get_by_text("No Tenders found").count():
-                            log("done: 0 tenders (No Tenders found)")
-                        else:
+                        if not page.get_by_text("No Tenders found").count():
                             item["error"] = "no result table and no 'No Tenders found' message (search captcha?)"
-                            log(f"ERROR {item['error']}")
+                            log(f"ERROR {where}: {item['error']}")
                         finish(item)
                         done = ki
                         continue
@@ -297,9 +359,7 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
                     with seen_lock:  # shared across sub-categories: a tender found twice is opened once
                         new = [r for r in fresh if r["id"] not in seen]
                         seen.update(r["id"] for r in new)
-                    log(f"{len(rows)} result rows ({len(fresh)} published {window_label(dates)}, {len(new)} new)")
-                    for ti, row in enumerate(new, 1):
-                        log(f"tender {ti}/{len(new)} {row['id']}: opening")
+                    for row in new:
                         details = tender_details(context, row["href"], row["id"])
                         if details is None:
                             continue
@@ -308,28 +368,26 @@ def _scrape_group(portal, group, seen, seen_lock, headless, extract_and_upload, 
                                                 "keyword": keyword, "href": row["href"], "id": row["id"], **details})
                 except Exception as e:  # keep tenders already collected; move on to the next keyword
                     item["error"] = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
-                    log(f"ERROR {item['error']} ({len(item['tenders'])} tenders kept)")
+                    log(f"ERROR {where}: {item['error']} ({len(item['tenders'])} tenders kept)")
                 failed = [t for t in item["tenders"] if not t["zip_path"]]
                 if failed and any_zip:
-                    log(f"retrying {len(failed)} tenders whose captcha failed")
                     for tender in failed:
                         try:
                             details = tender_details(context, tender["href"], tender.get("Tender ID") or tender["id"])
                             if details:
                                 tender["zip_path"] = details["zip_path"]
                         except Exception as e:
-                            log(f"WARNING [{tender['id']}] retry failed: {e}")
-                        log(f"[{tender['id']}] {'retry ok' if tender['zip_path'] else 'still no zip'}")
+                            _problem(tender.get("Tender ID") or tender["id"], f"retry failed: {type(e).__name__}")
                 for tender in item["tenders"]:
                     _finish(tender, extract_and_upload)
-                if not item["error"]:
-                    log(f"done: {len(item['tenders'])} tenders")
+                if item["tenders"]:
+                    log_block(where, item["tenders"])
                 finish(item)
                 done = ki
             browser.close()
     except Exception as e:  # browser crash: the other sub-categories keep going
         err = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
-        log(f"ERROR browser crashed, {len(group) - done} keyword(s) not searched: {err}")
+        log(f"ERROR {label}: browser crashed, {len(group) - done} keyword(s) not searched: {err}")
         for item in group[done:]:
             item["error"] = item["error"] or f"browser crashed: {err}"
             finish(item)
@@ -352,32 +410,29 @@ def scrape(portals: list[str], only_keyword: str | None = None, headless: bool =
     keywords = [(category, sub, keyword) for category, subs in CATEGORY_CONFIG.items()
                 for sub, cfg in subs.items() for keyword in cfg["keywords"]
                 if not only_keyword or keyword.lower() == only_keyword.lower()]
-    started = time.monotonic()
     dates = published_window(days)  # today, plus `days` older days when the job asks for them
-    log(f"scrape: {len(portals)} portal(s) x {len(keywords)} keyword(s), e-Published {window_label(dates)} only")
 
     def finish(item) -> None:
+        with seen_lock:
+            stats[0] += 1
+            stats[1] += len(item["tenders"])
+        progress(f"{stats[0]}/{len(keywords)} keywords, {stats[1]} tenders")
         if on_keyword:
             on_keyword(item)
 
-    for pi, portal in enumerate(portals, 1):
+    for portal in portals:
+        stats = [0, 0]  # keywords finished, tenders found on this portal
         portal_items = [{"portal": portal, "category": c, "sub_category": s, "keyword": k,
                          "tenders": [], "error": None} for c, s, k in keywords]
         items += portal_items
         groups = {}
         for item in portal_items:
             groups.setdefault((item["category"], item["sub_category"]), []).append(item)
-        log(f"portal {pi}/{len(portals)} {portal}: {len(groups)} sub-categories in parallel")
         with ThreadPoolExecutor(max_workers=max(len(groups), 1)) as pool:
             futures = [pool.submit(_scrape_group, portal, g, seen, seen_lock, headless, extract_and_upload, finish,
                                    dates) for g in groups.values()]
             for f in futures:
                 f.result()
-    results = [t for i in items for t in i["tenders"]]
-    bad = sum(1 for i in items if i["error"])
-    with_docs = sum(1 for r in results if r["Tenders Documents"])
-    log(f"scrape done in {(time.monotonic() - started) / 60:.1f}m: {len(items)} keyword searches "
-        f"({len(items) - bad} ok, {bad} failed), {len(results)} tenders ({with_docs} with documents)")
     return items
 
 
@@ -390,4 +445,8 @@ def run(only_keyword: str | None = None) -> None:
         if item["tenders"]:
             print(json.dumps(item["tenders"], ensure_ascii=False, indent=2), flush=True)
 
-    scrape(website, only_keyword, on_keyword=show)
+    started = time.monotonic()
+    items = scrape(website, only_keyword, on_keyword=show)
+    for portal in website:
+        log_summary(portal, [i for i in items if i["portal"] == portal], [], window_label(published_window()),
+                    (time.monotonic() - started) / 60)
